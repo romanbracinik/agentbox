@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from agentbox.agents import ClaudeAgent
 from agentbox.config import Config
 from agentbox.container import ContainerRuntime
 from agentbox.exceptions import RuntimeNotFoundError
@@ -252,7 +253,7 @@ class TestAddCredentialMounts:
 
 
 class TestAddClaudeMounts:
-    """Tests for _add_claude_mounts method."""
+    """Tests for explicit Claude mounts supplied by the agent."""
 
     @pytest.fixture
     def runtime(self) -> ContainerRuntime:
@@ -269,9 +270,9 @@ class TestAddClaudeMounts:
         claude_dir = tmp_path / ".claude"
         claude_dir.mkdir()
 
-        config = Config()
+        config = Config.model_validate({"claude": {"share_host_config": True}})
         cmd: list[str] = []
-        runtime._add_claude_mounts(cmd, config)
+        runtime._add_mounts(cmd, ClaudeAgent().get_mounts(config))
 
         assert any(".claude" in c and ".claude.json" not in c for c in cmd)
 
@@ -284,9 +285,9 @@ class TestAddClaudeMounts:
         claude_json = tmp_path / ".claude.json"
         claude_json.touch()
 
-        config = Config()
+        config = Config.model_validate({"claude": {"share_host_config": True}})
         cmd: list[str] = []
-        runtime._add_claude_mounts(cmd, config)
+        runtime._add_mounts(cmd, ClaudeAgent().get_mounts(config))
 
         assert any(".claude.json" in c for c in cmd)
 
@@ -301,7 +302,7 @@ class TestAddClaudeMounts:
 
         config = Config.model_validate({"claude": {"global_claude_md": str(claude_md)}})
         cmd: list[str] = []
-        runtime._add_claude_mounts(cmd, config)
+        runtime._add_mounts(cmd, ClaudeAgent().get_mounts(config))
 
         assert any("CLAUDE.md" in c for c in cmd)
 
@@ -316,7 +317,7 @@ class TestAddClaudeMounts:
 
         config = Config.model_validate({"claude": {"plugins_dir": str(plugins_dir)}})
         cmd: list[str] = []
-        runtime._add_claude_mounts(cmd, config)
+        runtime._add_mounts(cmd, ClaudeAgent().get_mounts(config))
 
         assert any("plugins" in c for c in cmd)
 
