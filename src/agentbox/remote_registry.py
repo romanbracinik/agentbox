@@ -59,9 +59,15 @@ def load_registry(path: Path | None = None) -> dict[str, RemoteHost]:
     path = path or registry_path()
     if not path.exists():
         return {}
-    data = yaml.safe_load(path.read_text()) or {}
+    data = yaml.safe_load(path.read_text())
+    if data is not None and not isinstance(data, dict):
+        raise ConfigError(f"Invalid remote registry {path}: expected a mapping")
+    data = data or {}
+    remotes = data.get("remotes")
+    if remotes is not None and not isinstance(remotes, dict):
+        raise ConfigError(f"Invalid remote registry {path}: 'remotes' must be a mapping")
     hosts: dict[str, RemoteHost] = {}
-    for name, values in (data.get("remotes") or {}).items():
+    for name, values in (remotes or {}).items():
         try:
             hosts[name] = RemoteHost.model_validate(values)
         except ValidationError as err:

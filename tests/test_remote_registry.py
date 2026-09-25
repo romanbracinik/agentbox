@@ -53,3 +53,17 @@ def test_missing_key_rejected(tmp_path: Path) -> None:
 def test_invalid_remote_name_rejected(tmp_path: Path) -> None:
     with pytest.raises(ConfigError):
         save_host("-bad", _host(), tmp_path / "remotes.yaml")
+
+
+def test_non_mapping_document_rejected(tmp_path: Path) -> None:
+    path = tmp_path / "remotes.yaml"
+    path.write_text("- a\n- b\n")
+    with pytest.raises(ConfigError, match="expected a mapping"):
+        load_registry(path)
+
+
+def test_non_mapping_remotes_rejected(tmp_path: Path) -> None:
+    path = tmp_path / "remotes.yaml"
+    path.write_text("remotes: just-a-string\n")
+    with pytest.raises(ConfigError, match="'remotes' must be a mapping"):
+        load_registry(path)
