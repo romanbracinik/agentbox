@@ -86,7 +86,21 @@ a key is missing. The file contains no credentials.
 
 Each task runs in a tmux session named `agentbox-<task>` executing
 `agentbox run <base_dir>/wt/<task> --agent <agent> --name agentbox-task-<task> -- AGENT_ARGS`.
-Task names are validated with the existing container-name rules.
+Task names match `[a-zA-Z0-9][a-zA-Z0-9_-]*`: no dots or colons, since tmux rewrites
+them in session names. Every tmux command addresses the session with an exact target
+(`-t =agentbox-<task>`, and `=agentbox-<task>:` for `capture-pane`), so task `fix`
+never matches session `agentbox-fix-2` by prefix. The session is created with
+`remain-on-exit on`, so the pane and its output stay after the agent exits.
+
+`remote list` reports one state per task:
+
+- `running`: the tmux session exists and its pane is alive;
+- `exited`: the tmux session exists but its pane is dead (the agent ended; `remote
+  logs` still shows its output); `remote stop` is needed before reusing the name;
+- `stopped`: the worktree exists without a tmux session.
+
+The primary clone keeps a detached HEAD, so no branch (including the default branch)
+is held by it and any branch can be checked out in a task worktree.
 
 ## Remote host requirements
 
@@ -117,20 +131,25 @@ step it cannot complete. Re-running skips satisfied steps.
    install it with `pipx`; otherwise install `agentbox==<local version>` with `pipx`.
    Verify `agentbox --version` matches. Asks for confirmation before installing or
    upgrading.
-5. **GitHub**: run `gh auth status` remotely. When not logged in, print the command
+5. **GitHub**: check that `gh` is installed (otherwise `action`: install GitHub CLI
+   from https://cli.github.com and re-run), then run `gh auth status` remotely. When not logged in, print the command
    the user runs in their own terminal (`ssh -t <ssh> gh auth login --web`). The
-   wizard never reads, prints or transfers a token.
+   wizard never reads, prints or transfers a token. With `gh auth login --web` (HTTPS
+   credentials) the registered `repository` should be an HTTPS URL; an SSH URL needs
+   a separate SSH key on the remote.
 6. **Repository**: ask for `repository` and `base_dir`, then clone into
-   `<base_dir>/repo` if absent; if present, verify its origin matches.
+   `<base_dir>/repo` if absent and detach its HEAD (`git checkout --detach`); if
+   present, verify its origin matches and detach a HEAD that is on a branch
+   (reported as `fixed`; `remote doctor` reports it as `action` without changing it).
 7. **Remote config**: settings needed are `runtime`, `credentials.github: true` and
    `state_scope: repository` (see below). agentbox loads the first config file it
    finds and never merges across files (repository-tracked `.agentbox.yaml`/`.yml`
    first, then the remote user's global `~/.config/agentbox/config.yaml`/`.yml` or
-   `~/.agentbox.yaml`). If the repository tracks its own config, the wizard only
-   checks that the file exists — it does not read or diff its contents — and always
-   reports `action` naming all three keys to add there, since a repo-tracked file
-   always wins and the wizard never writes to it (worktrees do not carry untracked
-   files from the primary clone). Otherwise it adds any missing keys to the first
+   `~/.agentbox.yaml`). If the repository tracks its own config, the wizard reads it
+   and compares it with the required keys but never writes it, since a repo-tracked
+   file always wins (worktrees do not carry untracked files from the primary clone):
+   all keys present with the required values → `ok` and setup continues; otherwise
+   `action` naming the file and only the missing or conflicting keys. Otherwise it adds any missing keys to the first
    existing global file,
    creating `~/.config/agentbox/config.yaml` only if none exists yet, after asking
    for confirmation. A key already present with a different value is reported as
@@ -141,8 +160,9 @@ step it cannot complete. Re-running skips satisfied steps.
    not wait for a build.
 9. **Save** the registry entry.
 10. **Agent login** (informational, does not block): print the command that logs the
-    agent in once on the remote (`ssh -t <ssh> agentbox run <base_dir>/repo --agent
-    <agent>`). This is not verified automatically — agentbox does not inspect agent
+    agent in once on the remote through a login shell, so pipx's `PATH` is loaded
+    (`ssh -t <ssh> "bash -lc 'agentbox run <base_dir>/repo --agent <agent>'"`; the
+    remote part is quoted with `shlex` twice because ssh re-joins its arguments). This is not verified automatically — agentbox does not inspect agent
     credentials — so this step always reports `info`, never `action`. Login state
     lives on the remote, shared by all worktrees of the repo.
 
@@ -163,7 +183,9 @@ state_scope: workspace   # default, current behaviour
 With `repository`, the digest input is the resolved Git common directory reported by
 `git rev-parse --git-common-dir`, so the primary clone and all its worktrees share one
 HOME per agent. Outside a Git repository `repository` is a configuration error, not a
-silent fallback. The existing lease and active-container checks keep working because
+silent fallback. Switching an existing setup to `repository` starts with a new,
+empty HOME, so the agent needs a new login; `state reset` then deletes the HOME
+shared by all worktrees of the repository. The existing lease and active-container checks keep working because
 they operate on the resolved HOME path. `state show` reports the scope in use.
 
 ## Error handling
@@ -173,6 +195,12 @@ they operate on the resolved HOME path. `state show` reports the scope in use.
   the agent unchanged, including strings that look like flags.
 - `run` refuses an existing task name (tmux session or worktree) instead of reusing it.
 - `run` fails when `--branch` does not exist on the remote after `git fetch`.
+- After the fetch, an existing local branch in the primary clone is fast-forwarded to
+  `origin/<branch>` when it is an ancestor; a local branch with commits not on origin
+  is refused ("push or delete it first"). A branch already checked out in another
+  task's worktree is refused naming that task; for any other worktree, git's stderr
+  is surfaced.
+- `service logs` merges the container's stderr into the output (`2>&1` on the remote).
 - `stop` without `--remove-worktree` keeps the worktree so work is not lost; with it,
   refuse when the worktree has uncommitted changes.
 - No command prints environment values or file contents from the remote HOME.
@@ -205,7 +233,13 @@ On a real host, after all automated tasks are complete:
    `remote logs`.
 3. `agentbox remote stop <host> smoke --remove-worktree`.
 4. `agentbox remote service setup <host>`, then `remote service start <host> <name>
-   --restart-policy unless-stopped`, `service status`, `service logs`.
+   --restart-policy unless-stopped`, `service status`, `service logs`; verify that
+   `service logs` shows the gateway output.
+5. With rootless Podman, verify the task survives SSH logout: `loginctl show-user
+   $USER -p Linger` must report `Linger=yes`, otherwise the user's processes end at
+   logout.
+6. Start a task that fails immediately (for example an invalid agent argument); verify
+   `remote list` shows it as `exited` and `remote logs` still shows its output.
 
 ## Open questions for the maintainer
 

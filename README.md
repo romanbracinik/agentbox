@@ -874,21 +874,34 @@ ssh, runtime, tools, agentbox, github, repository, remote-config, image, save, l
 `tmux` and `pipx`; `agentbox` installs/upgrades the remote CLI to match the laptop
 version (a source checkout is streamed to the remote as a base64-encoded wheel over
 the SSH connection, otherwise `pipx install agentbox==<version>` is used); `github`
-checks `gh auth status`; `repository` clones or verifies the configured Git
-repository; `remote-config` adds `runtime`, `credentials.github` and
+checks that `gh` is installed (otherwise it points to https://cli.github.com) and
+then `gh auth status`; `repository` clones or verifies the configured Git
+repository and detaches its HEAD, so no branch (including the default branch) is held
+by the primary clone and every branch can be checked out in a task worktree;
+`remote-config` adds `runtime`, `credentials.github` and
 `state_scope: repository`. Agentbox loads the first config file it finds
 (repository-tracked `.agentbox.yaml`/`.yml`, then the remote user's global
 `~/.config/agentbox/config.yaml`/`.yml` or `~/.agentbox.yaml`) and never merges
-across files. If the repository tracks its own config, the wizard only checks that
-the file exists — it does not inspect its contents — and reports `action` naming
-all three keys to add there, since it never writes to a repository-tracked file;
-otherwise it adds the keys actually missing from the first existing global file —
+across files. If the repository tracks its own config, the wizard reads it and never
+writes it: when it already has the three keys with the required values the step is
+`ok` and setup continues; otherwise it reports `action` naming the file and only the
+missing or conflicting keys to fix there. Without a tracked config it adds the keys actually missing from the first existing global file —
 creating `~/.config/agentbox/config.yaml` only if none exists — after asking for
 confirmation. A key already present with a different value is reported, never
 overwritten; `image` builds the container image so the
 first task does not wait for it; `save` writes the registry entry; `login` is
 informational only — it prints the command to log the agent in once on the remote
-and is not verified automatically, since agent credentials are not inspected.
+and is not verified automatically, since agent credentials are not inspected:
+
+```bash
+ssh -t agent-runner.example.com "bash -lc 'agentbox run /home/user/agentbox-remote/myproject/repo --agent claude'"
+```
+
+The login shell (`bash -lc`) puts the pipx-installed `agentbox` on `PATH`.
+
+If the remote's GitHub CLI was logged in with `gh auth login --web` (HTTPS), use an
+HTTPS repository URL (`https://github.com/org/repo.git`); an SSH URL needs a separate
+SSH key on the remote.
 
 Registered hosts live in `~/.config/agentbox/remotes.yaml`, written only by
 `remote setup`:
@@ -917,7 +930,17 @@ agentbox remote logs agent-runner fix-123 --tail 200
 agentbox remote stop agent-runner fix-123 --remove-worktree   # refused if the worktree is dirty
 ```
 
-`--branch` must already exist on the remote's Git origin; `remote run` does not
+Task names match `[a-zA-Z0-9][a-zA-Z0-9_-]*` (no dots or colons: tmux rewrites them
+in session names). `remote list` prints one of three states per task: `running`
+(agent still running in its tmux session), `exited` (the agent ended; the tmux pane
+is kept, so `remote logs` still shows its output) and `stopped` (worktree left, no
+tmux session). Run `remote stop` before reusing the name of an exited task.
+
+`--branch` must already exist on the remote's Git origin. The remote default branch
+works like any other. If the primary clone has a stale local copy of the branch, it
+is fast-forwarded to `origin/<branch>`; if the local branch has commits not on
+origin, `remote run` refuses to start (push or delete it first). A branch that is
+already checked out by another task is refused with that task's name. `remote run` does not
 transfer uncommitted or untracked laptop changes, and there is no session handoff
 between the laptop and the remote. Unknown options before `--` are rejected;
 everything after `--` is forwarded to the agent unchanged.
@@ -932,14 +955,17 @@ are Hermes-only:
 agentbox remote service setup agent-runner
 agentbox remote service start agent-runner hermes --restart-policy unless-stopped
 agentbox remote service status agent-runner hermes
-agentbox remote service logs agent-runner hermes --tail 100
+agentbox remote service logs agent-runner hermes --tail 100   # includes container stderr
 agentbox remote service stop agent-runner hermes
 ```
 
 All task and service worktrees share one private agent HOME per repository through
 `state_scope: repository` (default remains `workspace`, keyed per worktree path).
 `state_scope: repository` requires a Git repository and keys the HOME by the Git
-common directory instead of the worktree path.
+common directory instead of the worktree path. Switching an existing setup to
+`state_scope: repository` starts with a new, empty HOME, so the agent needs a new
+login; `agentbox state reset` then deletes the HOME shared by all worktrees of the
+repository.
 
 Limits: no transfer of uncommitted laptop changes, no live session handoff, no
 nested Docker/Compose inside the task container, and no task queue — each

@@ -2,9 +2,13 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
+from click.testing import CliRunner
 
+from agentbox.cli import main
 from agentbox.config import Config
 from agentbox.exceptions import ConfigError
+from agentbox.execution import prepare_run
 from agentbox.state import state_home
 
 
@@ -72,3 +76,39 @@ def test_repository_scope_outside_git_is_error(tmp_path: Path) -> None:
     plain.mkdir()
     with pytest.raises(ConfigError, match="requires a Git repository"):
         state_home(tmp_path / "s", plain, "claude", "repository")
+
+
+def test_repository_scope_flows_through_prepare_run(
+    tmp_path: Path, repo_with_worktree: tuple[Path, Path]
+) -> None:
+    repo, worktree = repo_with_worktree
+    config = Config(state_dir=tmp_path / "s", state_scope="repository")
+    specs = [prepare_run("image", path, [], ["bash"], config) for path in (repo, worktree)]
+    assert specs[0].home is not None and specs[0].home == specs[1].home
+
+
+@pytest.fixture
+def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    return home
+
+
+def test_state_show_prints_repository_scope(
+    tmp_path: Path, repo_with_worktree: tuple[Path, Path], isolated_home: Path
+) -> None:
+    _, worktree = repo_with_worktree
+    (worktree / ".agentbox.yaml").write_text(
+        yaml.safe_dump({"state_scope": "repository", "state_dir": str(tmp_path / "s")})
+    )
+    result = CliRunner().invoke(main, ["state", "show", str(worktree)])
+    assert result.exit_code == 0, result.output
+    assert "Scope: repository" in result.output
+
+
+def test_state_reset_help_mentions_shared_repository_home(isolated_home: Path) -> None:
+    result = CliRunner().invoke(main, ["state", "reset", "--help"])
+    text = " ".join(result.output.split())
+    assert "state_scope: repository" in text
+    assert "shared by all worktrees" in text

@@ -45,7 +45,10 @@ def list_states(workspace: Path) -> None:
 @click.option("--agent", default="claude")
 @click.option("--yes", is_flag=True, help="Explicitly confirm deletion without a prompt")
 def reset(workspace: Path, agent: str, yes: bool) -> None:
-    """Delete only this workspace/agent HOME after checking active containers."""
+    """Delete only this workspace/agent HOME after checking active containers.
+
+    With state_scope: repository this is the HOME shared by all worktrees of the repository.
+    """
     get_agent(agent)
     config, _ = load_config(workspace.resolve())
     home = state_home(config.state_dir, workspace, agent, config.state_scope)
