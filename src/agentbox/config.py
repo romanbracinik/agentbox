@@ -59,6 +59,7 @@ class Config(BaseModel):
     image_name: str = "agentbox"
     prebuilt_image: str | None = None
     state_dir: Path = Field(default_factory=lambda: Path.home() / ".local/state/agentbox")
+    state_scope: Literal["workspace", "repository"] = "workspace"
 
 
 def get_config_paths(workspace: Path | None = None) -> list[Path]:

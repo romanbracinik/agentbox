@@ -22,8 +22,12 @@ def show(workspace: Path, agent: str, path_only: bool) -> None:
     """Show private HOME location and byte usage; never print its contents."""
     get_agent(agent)
     config, _ = load_config(workspace.resolve())
-    home = state_home(config.state_dir, workspace, agent)
-    click.echo(str(home) if path_only else f"{home}\nBytes: {state_size(home)}")
+    home = state_home(config.state_dir, workspace, agent, config.state_scope)
+    click.echo(
+        str(home)
+        if path_only
+        else f"{home}\nScope: {config.state_scope}\nBytes: {state_size(home)}"
+    )
 
 
 @state.command(name="list")
@@ -44,7 +48,7 @@ def reset(workspace: Path, agent: str, yes: bool) -> None:
     """Delete only this workspace/agent HOME after checking active containers."""
     get_agent(agent)
     config, _ = load_config(workspace.resolve())
-    home = state_home(config.state_dir, workspace, agent)
+    home = state_home(config.state_dir, workspace, agent, config.state_scope)
     if not yes and not click.confirm(
         f"Delete private HOME and all credentials/sessions in {home}?"
     ):
