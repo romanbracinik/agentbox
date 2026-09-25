@@ -879,11 +879,13 @@ repository; `remote-config` adds `runtime`, `credentials.github` and
 `state_scope: repository`. Agentbox loads the first config file it finds
 (repository-tracked `.agentbox.yaml`/`.yml`, then the remote user's global
 `~/.config/agentbox/config.yaml`/`.yml` or `~/.agentbox.yaml`) and never merges
-across files. If the repository tracks its own config, the wizard only reports what
-is missing there instead of writing to it; otherwise it adds missing keys to the
-first existing global file — creating `~/.config/agentbox/config.yaml` only if none
-exists — after asking for confirmation. A key already present with a different
-value is reported, never overwritten; `image` builds the container image so the
+across files. If the repository tracks its own config, the wizard only checks that
+the file exists — it does not inspect its contents — and reports `action` naming
+all three keys to add there, since it never writes to a repository-tracked file;
+otherwise it adds the keys actually missing from the first existing global file —
+creating `~/.config/agentbox/config.yaml` only if none exists — after asking for
+confirmation. A key already present with a different value is reported, never
+overwritten; `image` builds the container image so the
 first task does not wait for it; `save` writes the registry entry; `login` is
 informational only — it prints the command to log the agent in once on the remote
 and is not verified automatically, since agent credentials are not inspected.
@@ -896,7 +898,7 @@ remotes:
   agent-runner:
     ssh: agent-runner.example.com
     repository: git@github.com:org/repo.git
-    base_dir: /home/user/agentbox-remote/repo   # absolute path on the remote
+    base_dir: /home/user/agentbox-remote/myproject   # absolute path on the remote
     agent: claude
     runtime: docker
 ```

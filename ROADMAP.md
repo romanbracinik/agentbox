@@ -116,5 +116,5 @@ remaining findings and update instructions. Raw findings remain visible.
 
 - [x] Implemented: setup wizard, doctor, task run/list/attach/logs/stop and Hermes
   service management on an SSH host, laptop-side registry, `state_scope: repository`.
-- [ ] Real-host validation pending: see the manual acceptance checklist in
-  [the design spec](docs/specs/2026-09-25-remote-tasks-design.md).
+- [ ] Real-host validation pending: see the [manual acceptance checklist](docs/specs/2026-09-25-remote-tasks-design.md#manual-acceptance)
+  in the design spec.

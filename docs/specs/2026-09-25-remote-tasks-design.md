@@ -126,10 +126,12 @@ step it cannot complete. Re-running skips satisfied steps.
    `state_scope: repository` (see below). agentbox loads the first config file it
    finds and never merges across files (repository-tracked `.agentbox.yaml`/`.yml`
    first, then the remote user's global `~/.config/agentbox/config.yaml`/`.yml` or
-   `~/.agentbox.yaml`). If the repository tracks its own config, the wizard reports
-   what is missing there as `action` and never writes to it, since a repo-tracked
-   file always wins and worktrees do not carry untracked files from the primary
-   clone. Otherwise it adds any missing keys to the first existing global file,
+   `~/.agentbox.yaml`). If the repository tracks its own config, the wizard only
+   checks that the file exists — it does not read or diff its contents — and always
+   reports `action` naming all three keys to add there, since a repo-tracked file
+   always wins and the wizard never writes to it (worktrees do not carry untracked
+   files from the primary clone). Otherwise it adds any missing keys to the first
+   existing global file,
    creating `~/.config/agentbox/config.yaml` only if none exists yet, after asking
    for confirmation. A key already present with a different value is reported as
    `action` and never overwritten. Malformed or non-mapping config (invalid YAML, a
@@ -191,6 +193,19 @@ they operate on the resolved HOME path. `state show` reports the scope in use.
 
 README section "Remote tasks", ROADMAP entry, CHANGELOG entry, AGENTS.md
 architecture line for the new module.
+
+## Manual acceptance
+
+On a real host, after all automated tasks are complete:
+
+1. `agentbox remote setup <host>` until all steps are OK/INFO; log the agent in once
+   with the printed command.
+2. `agentbox remote run <host> --name smoke --branch <existing-branch> -- "print the
+   repo README title"`; `remote attach`, detach; close the laptop lid; reopen;
+   `remote logs`.
+3. `agentbox remote stop <host> smoke --remove-worktree`.
+4. `agentbox remote service setup <host>`, then `remote service start <host> <name>
+   --restart-policy unless-stopped`, `service status`, `service logs`.
 
 ## Open questions for the maintainer
 
