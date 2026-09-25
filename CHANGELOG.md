@@ -3,7 +3,7 @@
 ## Unreleased
 
 - Added `agentbox remote` (setup wizard, doctor, tasks, Hermes services) and `state_scope: repository`.
-- Hermes image: install the `slack` and `anthropic` extras and preinstall the WhatsApp bridge dependencies (bridge directory writable by the runtime UID), so the Slack platform, the Anthropic provider and WhatsApp work in the gateway container.
+- Hermes image: install the `anthropic` extra and preinstall the WhatsApp bridge dependencies (bridge directory writable by the runtime UID), so the Anthropic provider and WhatsApp work in the gateway container.
 
 ## 0.5.0a1 — always-on preview
 
