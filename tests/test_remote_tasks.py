@@ -252,3 +252,19 @@ def test_stop_removes_clean_worktree() -> None:
     runner = FakeRunner({"status --porcelain": out("")})
     stop_task(_shell(runner), HOST, "a", remove_worktree=True)
     assert "git -C /srv/ab/r/repo worktree remove /srv/ab/r/wt/a" in runner.remote_commands()
+
+
+def test_stop_unknown_task_is_clear_error() -> None:
+    runner = FakeRunner({"tmux has-session": fail(""), "test -d /srv/ab/r/wt/a": fail("")})
+    with pytest.raises(RemoteError, match="Task a not found"):
+        stop_task(_shell(runner), HOST, "a", remove_worktree=True)
+    cmds = runner.remote_commands()
+    assert not any(word in c for c in cmds for word in ("kill-session", "rm -f", "status"))
+
+
+def test_stop_without_worktree_still_stops_session() -> None:
+    runner = FakeRunner({"test -d /srv/ab/r/wt/a": fail("")})
+    stop_task(_shell(runner), HOST, "a", remove_worktree=True)
+    cmds = runner.remote_commands()
+    assert "tmux kill-session -t =agentbox-a" in cmds
+    assert not any("status --porcelain" in c or "worktree remove" in c for c in cmds)

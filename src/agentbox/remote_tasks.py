@@ -191,6 +191,11 @@ def task_logs(shell: RemoteShell, task: str, tail: int) -> str:
 def stop_task(shell: RemoteShell, host: RemoteHost, task: str, *, remove_worktree: bool) -> None:
     _validate_task(task)
     worktree = _worktree(host, task)
+    has_session = shell.run(["tmux", "has-session", "-t", _target(task)]).returncode == 0
+    has_worktree = shell.run(["test", "-d", worktree]).returncode == 0
+    if not has_session and not has_worktree:
+        raise RemoteError(f"Task {task} not found on the remote (no tmux session, no worktree)")
+    remove_worktree = remove_worktree and has_worktree
     if remove_worktree:
         dirty = shell.check(
             ["git", "-C", worktree, "status", "--porcelain"], error=f"Cannot inspect {worktree}"
