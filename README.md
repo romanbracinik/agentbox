@@ -819,6 +819,11 @@ senders using Hermes platform settings before accepting bot traffic. Agentbox
 runs the foreground gateway under container supervision, without installing host
 system services, sharing host bot credentials or publishing inbound ports.
 
+The Hermes image includes the `slack` and `anthropic` extras and the WhatsApp
+bridge dependencies, so Slack (Socket Mode), the Anthropic provider (API key or
+Claude account OAuth) and WhatsApp work without installing anything at runtime.
+Pair WhatsApp once with `agentbox run --agent hermes ~/project -- whatsapp`.
+
 ```bash
 agentbox service start ~/project --name project-bot --env OPENAI_API_KEY
 agentbox service status project-bot
