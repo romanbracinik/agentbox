@@ -7,7 +7,7 @@ import sys
 import click
 
 from . import __version__
-from .remote_registry import RemoteHost, get_host, load_registry
+from .remote_registry import RemoteHost, get_host, load_registry, validate_remote_name
 from .remote_services import (
     RESTART_POLICIES,
     service_logs,
@@ -50,6 +50,7 @@ def remote() -> None:
 @click.option("--ssh", "ssh_destination", help="ssh destination; defaults to HOST for a new remote")
 def setup(host: str, ssh_destination: str | None) -> None:
     """Prepare and validate a remote host (re-runnable)."""
+    validate_remote_name(host)
     existing = load_registry().get(host)
     destination = ssh_destination or (existing.ssh if existing else host)
     results = run_setup(

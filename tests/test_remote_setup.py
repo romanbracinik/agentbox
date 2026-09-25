@@ -1,15 +1,27 @@
+import shlex
+import subprocess
+import tempfile
+from collections.abc import Sequence
+from contextlib import nullcontext
 from pathlib import Path
+from typing import Any
+from unittest.mock import patch
 
 import pytest
 import yaml
 
 from agentbox.exceptions import RemoteError
 from agentbox.remote_registry import RemoteHost, get_host, save_host
-from agentbox.remote_setup import StepResult, run_doctor, run_setup
+from agentbox.remote_setup import StepResult, _ssh_command, local_wheel, run_doctor, run_setup
 from agentbox.remote_ssh import RemoteShell
 from tests.remote_fakes import FakeRunner, fail, out
 
 VERSION = "0.5.0a1"
+DESIRED = {"runtime": "docker", "credentials": {"github": True}, "state_scope": "repository"}
+
+
+def _no_wheel() -> nullcontext[None]:
+    return nullcontext(None)
 
 
 class ScriptedPrompter:
@@ -65,7 +77,7 @@ def test_ssh_failure_stops_immediately(tmp_path: Path) -> None:
         RemoteShell("vm", runner),
         ScriptedPrompter(ANSWERS),
         local_version=VERSION,
-        wheel_builder=lambda: None,
+        wheel_builder=_no_wheel,
         registry=tmp_path / "r.yaml",
     )
     assert results[-1].status == "action" and "Permission denied" in results[-1].detail
@@ -79,7 +91,7 @@ def test_missing_runtime_is_action_without_sudo(tmp_path: Path) -> None:
         RemoteShell("vm", runner),
         ScriptedPrompter(ANSWERS),
         local_version=VERSION,
-        wheel_builder=lambda: None,
+        wheel_builder=_no_wheel,
         registry=tmp_path / "r.yaml",
     )
     assert results[-1].name == "runtime" and results[-1].status == "action"
@@ -106,7 +118,7 @@ def test_setup_is_idempotent(tmp_path: Path) -> None:
         RemoteShell("vm", runner),
         prompter,
         local_version=VERSION,
-        wheel_builder=lambda: None,
+        wheel_builder=_no_wheel,
         registry=registry,
     )
     assert prompter.confirmed == []
@@ -124,7 +136,7 @@ def test_version_mismatch_installs_then_verifies(tmp_path: Path) -> None:
             RemoteShell("vm", runner),
             ScriptedPrompter(ANSWERS),
             local_version=VERSION,
-            wheel_builder=lambda: None,
+            wheel_builder=_no_wheel,
             registry=tmp_path / "r.yaml",
         )
     assert f"pipx install --force agentbox=={VERSION}" in runner.remote_commands()
@@ -140,7 +152,7 @@ def test_wheel_is_streamed_not_copied_with_scp(tmp_path: Path) -> None:
             RemoteShell("vm", runner),
             ScriptedPrompter(ANSWERS),
             local_version=VERSION,
-            wheel_builder=lambda: wheel,
+            wheel_builder=lambda: nullcontext(wheel),
             registry=tmp_path / "r.yaml",
         )
     uploads = [c for c in runner.calls if c.input is not None]
@@ -156,7 +168,7 @@ def test_declined_install_is_action(tmp_path: Path) -> None:
         RemoteShell("vm", runner),
         ScriptedPrompter(ANSWERS, confirm=False),
         local_version=VERSION,
-        wheel_builder=lambda: None,
+        wheel_builder=_no_wheel,
         registry=tmp_path / "r.yaml",
     )
     assert results[-1].name == "agentbox" and results[-1].status == "action"
@@ -169,7 +181,7 @@ def test_gh_not_logged_in_prints_command_without_token(tmp_path: Path) -> None:
         RemoteShell("vm", runner),
         ScriptedPrompter(ANSWERS),
         local_version=VERSION,
-        wheel_builder=lambda: None,
+        wheel_builder=_no_wheel,
         registry=tmp_path / "r.yaml",
     )
     assert results[-1].name == "github" and results[-1].status == "action"
@@ -183,7 +195,7 @@ def test_clones_missing_repository(tmp_path: Path) -> None:
         RemoteShell("vm", runner),
         ScriptedPrompter(ANSWERS),
         local_version=VERSION,
-        wheel_builder=lambda: None,
+        wheel_builder=_no_wheel,
         registry=tmp_path / "r.yaml",
     )
     cmds = runner.remote_commands()
@@ -198,7 +210,7 @@ def test_existing_clone_on_branch_is_detached(tmp_path: Path) -> None:
         RemoteShell("vm", runner),
         ScriptedPrompter(ANSWERS),
         local_version=VERSION,
-        wheel_builder=lambda: None,
+        wheel_builder=_no_wheel,
         registry=tmp_path / "r.yaml",
     )
     assert _statuses(results)["repository"] == "fixed"
@@ -226,7 +238,7 @@ def test_remote_config_conflict_not_overwritten(tmp_path: Path) -> None:
         RemoteShell("vm", runner),
         ScriptedPrompter(ANSWERS),
         local_version=VERSION,
-        wheel_builder=lambda: None,
+        wheel_builder=_no_wheel,
         registry=tmp_path / "r.yaml",
     )
     assert results[-1].name == "remote-config" and results[-1].status == "action"
@@ -241,7 +253,7 @@ def test_remote_config_adds_missing_keys_after_confirmation(tmp_path: Path) -> N
         RemoteShell("vm", runner),
         ScriptedPrompter(ANSWERS),
         local_version=VERSION,
-        wheel_builder=lambda: None,
+        wheel_builder=_no_wheel,
         registry=tmp_path / "r.yaml",
     )
     written = [c.input for c in runner.calls if c.input is not None]
@@ -259,7 +271,7 @@ def test_successful_setup_saves_registry(tmp_path: Path) -> None:
         RemoteShell("vm", _healthy()),
         ScriptedPrompter(ANSWERS),
         local_version=VERSION,
-        wheel_builder=lambda: None,
+        wheel_builder=_no_wheel,
         registry=registry,
     )
     assert _statuses(results)["save"] == "fixed"
@@ -297,7 +309,7 @@ def test_repo_tracked_config_wins_and_is_not_written(tmp_path: Path) -> None:
         RemoteShell("vm", runner),
         ScriptedPrompter(ANSWERS),
         local_version=VERSION,
-        wheel_builder=lambda: None,
+        wheel_builder=_no_wheel,
         registry=tmp_path / "r.yaml",
     )
     assert results[-1].name == "remote-config" and results[-1].status == "action"
@@ -317,7 +329,7 @@ def test_remote_config_merges_into_existing_yml_variant(tmp_path: Path) -> None:
         RemoteShell("vm", runner),
         ScriptedPrompter(ANSWERS),
         local_version=VERSION,
-        wheel_builder=lambda: None,
+        wheel_builder=_no_wheel,
         registry=tmp_path / "r.yaml",
     )
     writes = [c for c in runner.calls if c.input is not None]
@@ -336,7 +348,7 @@ def test_remote_config_non_mapping_is_action(tmp_path: Path) -> None:
         RemoteShell("vm", runner),
         ScriptedPrompter(ANSWERS),
         local_version=VERSION,
-        wheel_builder=lambda: None,
+        wheel_builder=_no_wheel,
         registry=tmp_path / "r.yaml",
     )
     assert results[-1].name == "remote-config" and results[-1].status == "action"
@@ -350,7 +362,7 @@ def test_remote_config_malformed_yaml_is_action(tmp_path: Path) -> None:
         RemoteShell("vm", runner),
         ScriptedPrompter(ANSWERS),
         local_version=VERSION,
-        wheel_builder=lambda: None,
+        wheel_builder=_no_wheel,
         registry=tmp_path / "r.yaml",
     )
     assert results[-1].name == "remote-config" and results[-1].status == "action"
@@ -364,7 +376,7 @@ def test_relative_base_dir_is_action_named_registry(tmp_path: Path) -> None:
         RemoteShell("vm", _healthy()),
         ScriptedPrompter(answers),
         local_version=VERSION,
-        wheel_builder=lambda: None,
+        wheel_builder=_no_wheel,
         registry=tmp_path / "r.yaml",
     )
     assert results[-1].name == "registry" and results[-1].status == "action"
@@ -377,8 +389,135 @@ def test_missing_origin_is_action(tmp_path: Path) -> None:
         RemoteShell("vm", runner),
         ScriptedPrompter(ANSWERS),
         local_version=VERSION,
-        wheel_builder=lambda: None,
+        wheel_builder=_no_wheel,
         registry=tmp_path / "r.yaml",
     )
     assert results[-1].name == "repository" and results[-1].status == "action"
     assert "no origin remote" in results[-1].detail
+
+
+def _setup(runner: FakeRunner, tmp_path: Path) -> list[StepResult]:
+    return run_setup(
+        "vm",
+        RemoteShell("vm", runner),
+        ScriptedPrompter(ANSWERS),
+        local_version=VERSION,
+        wheel_builder=_no_wheel,
+        registry=tmp_path / "r.yaml",
+    )
+
+
+def _tracked(content: str) -> FakeRunner:
+    return _healthy(
+        **{
+            "test -f /srv/ab/r/repo/.agentbox.yaml": out(""),
+            "cat /srv/ab/r/repo/.agentbox.yaml": out(content),
+        }
+    )
+
+
+def test_repo_tracked_config_with_matching_keys_is_ok(tmp_path: Path) -> None:
+    runner = _tracked(yaml.safe_dump({**DESIRED, "extra": 1}))
+    results = _setup(runner, tmp_path)
+    assert _statuses(results)["remote-config"] == "ok"
+    assert _statuses(results)["save"] == "fixed"
+    assert not any(c.input is not None for c in runner.calls)
+
+
+def test_repo_tracked_config_names_only_missing_and_conflicting_keys(tmp_path: Path) -> None:
+    runner = _tracked(yaml.safe_dump({"runtime": "podman", "credentials": {"github": True}}))
+    results = _setup(runner, tmp_path)
+    last = results[-1]
+    assert last.name == "remote-config" and last.status == "action"
+    assert "/srv/ab/r/repo/.agentbox.yaml" in last.detail
+    assert "state_scope" in last.detail and "runtime is 'podman'" in last.detail
+    assert "credentials" not in last.detail
+    assert not any(c.input is not None for c in runner.calls)
+
+
+@pytest.mark.parametrize("content", ["runtime: [unterminated\n", "- a\n- b\n"])
+def test_repo_tracked_config_malformed_is_action(tmp_path: Path, content: str) -> None:
+    runner = _tracked(content)
+    results = _setup(runner, tmp_path)
+    assert results[-1].name == "remote-config" and results[-1].status == "action"
+    assert "/srv/ab/r/repo/.agentbox.yaml" in results[-1].detail
+    assert not any(c.input is not None for c in runner.calls)
+
+
+def test_login_hint_uses_login_shell(tmp_path: Path) -> None:
+    results = _setup(_healthy(), tmp_path)
+    hint = results[-1]
+    assert hint.name == "login"
+    command = hint.detail.split(": ", 1)[1]
+    ssh = shlex.split(command)
+    assert ssh[:3] == ["ssh", "-t", "vm"]
+    # ssh joins its remaining arguments with spaces and the remote shell re-parses them.
+    remote = shlex.split(" ".join(ssh[3:]))
+    assert remote[:2] == ["bash", "-lc"]
+    assert shlex.split(remote[2]) == [
+        "agentbox",
+        "run",
+        "/srv/ab/r/repo",
+        "--agent",
+        "claude",
+    ]
+
+
+def test_missing_gh_is_action_with_install_hint(tmp_path: Path) -> None:
+    runner = _healthy(**{"command -v gh": fail("")})
+    results = _setup(runner, tmp_path)
+    assert results[-1].name == "github" and results[-1].status == "action"
+    assert "https://cli.github.com" in results[-1].detail
+    assert not any("gh auth status" in c for c in runner.remote_commands())
+
+
+def _wheel_dirs(root: Path) -> list[Path]:
+    return list(root.glob("agentbox-wheel-*"))
+
+
+def test_local_wheel_removes_temp_dir_after_use(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+
+    def fake_run(argv: Sequence[str], **_: Any) -> subprocess.CompletedProcess[bytes]:
+        target = Path(argv[argv.index("-w") + 1])
+        (target / "agentbox-0.5.0-py3-none-any.whl").write_bytes(b"w")
+        return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+    with patch("agentbox.remote_setup.subprocess.run", fake_run):
+        with local_wheel() as wheel:
+            assert wheel is not None and wheel.read_bytes() == b"w"
+    assert _wheel_dirs(tmp_path) == []
+
+
+def test_local_wheel_pip_failure_is_remote_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    error = subprocess.CalledProcessError(1, ["pip"], output=b"", stderr=b"pip exploded")
+    with patch("agentbox.remote_setup.subprocess.run", side_effect=error):
+        with pytest.raises(RemoteError, match="pip exploded"):
+            with local_wheel():
+                pass
+    assert _wheel_dirs(tmp_path) == []
+
+
+def test_local_wheel_without_output_is_remote_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    done = subprocess.CompletedProcess(["pip"], 0, b"", b"")
+    with patch("agentbox.remote_setup.subprocess.run", return_value=done):
+        with pytest.raises(RemoteError, match="wheel"):
+            with local_wheel():
+                pass
+    assert _wheel_dirs(tmp_path) == []
+
+
+@pytest.mark.parametrize("repo", ["/srv/ab/r/repo", "/srv/my repo", "/srv/$HOME's"])
+def test_ssh_command_survives_both_shells(repo: str) -> None:
+    ssh = shlex.split(_ssh_command("vm", ["agentbox", "run", repo]))
+    remote = shlex.split(" ".join(ssh[3:]))
+    assert remote[:2] == ["bash", "-lc"]
+    assert shlex.split(remote[2]) == ["agentbox", "run", repo]

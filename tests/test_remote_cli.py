@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import patch
 
@@ -126,10 +127,26 @@ def test_setup_on_healthy_registered_host_exits_zero() -> None:
     runner = _healthy_setup_runner()
     with (
         patch("agentbox.remote_cli.RemoteShell", lambda dest: RemoteShell(dest, runner)),
-        patch("agentbox.remote_cli.local_wheel", lambda: None),
+        patch("agentbox.remote_cli.local_wheel", lambda: nullcontext(None)),
     ):
         result = CliRunner().invoke(main, ["remote", "setup", "vm"])
     assert result.exit_code == 0, result.output
+
+
+def test_setup_rejects_invalid_remote_name_before_ssh() -> None:
+    destinations: list[str] = []
+
+    def factory(dest: str) -> RemoteShell:
+        destinations.append(dest)
+        return RemoteShell(dest, FakeRunner())
+
+    with (
+        patch("agentbox.remote_cli.RemoteShell", factory),
+        patch("agentbox.remote_cli.local_wheel", lambda: nullcontext(None)),
+    ):
+        result = CliRunner().invoke(main, ["remote", "setup", "bad name", "--ssh", "vm"])
+    assert result.exit_code != 0
+    assert destinations == []
 
 
 def test_setup_uses_explicit_ssh_destination_for_new_remote() -> None:
@@ -141,7 +158,7 @@ def test_setup_uses_explicit_ssh_destination_for_new_remote() -> None:
 
     with (
         patch("agentbox.remote_cli.RemoteShell", factory),
-        patch("agentbox.remote_cli.local_wheel", lambda: None),
+        patch("agentbox.remote_cli.local_wheel", lambda: nullcontext(None)),
     ):
         CliRunner().invoke(main, ["remote", "setup", "brand-new", "--ssh", "other-dest"])
     assert destinations == ["other-dest"]

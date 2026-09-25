@@ -9,13 +9,18 @@ from tests.remote_fakes import FakeRunner, fail, out
 
 def test_argv_uses_batch_mode_and_login_shell() -> None:
     argv = RemoteShell("host").argv(["echo", "a b"])
-    assert argv[:5] == ["ssh", "-T", "-o", "BatchMode=yes", "host"]
+    assert argv[:6] == ["ssh", "-T", "-o", "BatchMode=yes", "--", "host"]
     assert shlex.split(argv[-1]) == ["bash", "-lc", "echo 'a b'"]
 
 
 def test_metacharacters_stay_quoted() -> None:
     argv = RemoteShell("host").argv(["echo", "$(rm -rf ~); x"])
     assert shlex.split(shlex.split(argv[-1])[-1]) == ["echo", "$(rm -rf ~); x"]
+
+
+def test_destination_follows_option_terminator() -> None:
+    argv = RemoteShell("-oProxyCommand=evil").argv(["true"])
+    assert argv.index("--") == argv.index("-oProxyCommand=evil") - 1
 
 
 def test_tty_flag() -> None:

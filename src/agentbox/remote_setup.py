@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import base64
+import re
+import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Protocol, cast
@@ -19,7 +23,7 @@ from .remote_registry import RemoteHost, load_registry, save_host
 from .remote_ssh import RemoteShell
 
 Status = Literal["ok", "fixed", "action", "info"]
-WheelBuilder = Callable[[], "Path | None"]
+WheelBuilder = Callable[[], AbstractContextManager["Path | None"]]
 # Mirrors agentbox.config.get_config_paths(): a repo-tracked file always wins (it is
 # checked out into every worktree), then the remote user's first existing global file.
 REPO_CONFIG_NAMES = (".agentbox.yaml", ".agentbox.yml")
@@ -30,6 +34,7 @@ GLOBAL_CONFIG_CANDIDATES = (
 )
 WHEEL_DIR = ".cache/agentbox"
 TOOLS = ("git", "tmux", "pipx")
+_DOUBLE_QUOTE_SAFE = re.compile(r'[^"$`\\!]*')
 
 
 @dataclass(frozen=True)
@@ -45,17 +50,39 @@ class Prompter(Protocol):
     def confirm(self, text: str) -> bool: ...
 
 
-def local_wheel() -> Path | None:
+@contextmanager
+def local_wheel() -> Iterator[Path | None]:
     root = Path(__file__).resolve().parents[2]
     if not (root / "pyproject.toml").exists():
-        return None
+        yield None
+        return
     target = Path(tempfile.mkdtemp(prefix="agentbox-wheel-"))
-    subprocess.run(
-        [sys.executable, "-m", "pip", "wheel", "--no-deps", "-q", "-w", str(target), str(root)],
-        check=True,
-        capture_output=True,
-    )
-    return next(target.glob("agentbox-*.whl"))
+    try:
+        try:
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "pip",
+                    "wheel",
+                    "--no-deps",
+                    "-q",
+                    "-w",
+                    str(target),
+                    str(root),
+                ],
+                check=True,
+                capture_output=True,
+            )
+        except subprocess.CalledProcessError as err:
+            stderr = (err.stderr or b"").decode(errors="replace").strip()
+            raise RemoteError(f"Cannot build the agentbox wheel: {stderr or err}") from None
+        wheel = next(target.glob("agentbox-*.whl"), None)
+        if wheel is None:
+            raise RemoteError(f"pip produced no agentbox wheel in {target}")
+        yield wheel
+    finally:
+        shutil.rmtree(target, ignore_errors=True)
 
 
 def _ssh(shell: RemoteShell) -> StepResult:
@@ -118,26 +145,31 @@ def _agentbox(
         )
     if not prompter.confirm(f"Install agentbox {local_version} on the remote (currently {found})?"):
         return StepResult("agentbox", "action", f"remote {found}, laptop {local_version}")
-    wheel = wheel_builder()
-    if wheel is None:
-        shell.check(
-            ["pipx", "install", "--force", f"agentbox=={local_version}"],
-            error="pipx install failed",
-        )
-    else:
-        remote_wheel = f"{WHEEL_DIR}/{wheel.name}"
-        shell.check(
-            ["bash", "-c", 'mkdir -p "$(dirname "$1")" && base64 -d > "$1"', "_", remote_wheel],
-            error="Cannot upload wheel",
-            input=base64.b64encode(wheel.read_bytes()).decode(),
-        )
-        shell.check(["pipx", "install", "--force", remote_wheel], error="pipx install failed")
+    with wheel_builder() as wheel:
+        remote_wheel = None
+        if wheel is not None:
+            remote_wheel = f"{WHEEL_DIR}/{wheel.name}"
+            shell.check(
+                ["bash", "-c", 'mkdir -p "$(dirname "$1")" && base64 -d > "$1"', "_", remote_wheel],
+                error="Cannot upload wheel",
+                input=base64.b64encode(wheel.read_bytes()).decode(),
+            )
+    shell.check(
+        ["pipx", "install", "--force", remote_wheel or f"agentbox=={local_version}"],
+        error="pipx install failed",
+    )
     if _remote_version(shell) != local_version:
         raise RemoteError("agentbox version on the remote still differs after install")
     return StepResult("agentbox", "fixed", local_version)
 
 
 def _github(shell: RemoteShell) -> StepResult:
+    if shell.run(["command", "-v", "gh"]).returncode != 0:
+        return StepResult(
+            "github",
+            "action",
+            "Install GitHub CLI on the remote (https://cli.github.com), then re-run",
+        )
     if shell.run(["gh", "auth", "status"]).returncode == 0:
         return StepResult("github", "ok", "gh logged in")
     return StepResult(
@@ -207,18 +239,50 @@ def _merge(
     return merged, missing, conflicts
 
 
+def _parse_config(path: str, text: str) -> dict[str, Any] | StepResult:
+    try:
+        loaded = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return StepResult("remote-config", "action", f"{path} is not valid YAML")
+    loaded = loaded or {}
+    if not isinstance(loaded, dict):
+        return StepResult("remote-config", "action", f"{path} does not contain a mapping")
+    if not isinstance(loaded.get("credentials", {}), dict):
+        return StepResult("remote-config", "action", f"{path}: 'credentials' must be a mapping")
+    return loaded
+
+
+def _check_tracked_config(
+    shell: RemoteShell, repo_file: str, desired: dict[str, Any]
+) -> StepResult:
+    # Tracked in the repository and checked out into every worktree: read-only for the wizard.
+    result = shell.run(["cat", repo_file])
+    if result.returncode != 0:
+        detail = result.stderr.strip() or f"exit {result.returncode}"
+        return StepResult("remote-config", "action", f"Cannot read {repo_file}: {detail}")
+    parsed = _parse_config(repo_file, result.stdout)
+    if isinstance(parsed, StepResult):
+        return parsed
+    _, missing, conflicts = _merge(parsed, desired)
+    if not missing and not conflicts:
+        return StepResult("remote-config", "ok", repo_file)
+    problems = [f"add {key}" for key in missing] + conflicts
+    return StepResult(
+        "remote-config",
+        "action",
+        f"{repo_file} is tracked in the repository and takes precedence; "
+        f"edit it there: {'; '.join(problems)}",
+    )
+
+
 def _remote_config(
     shell: RemoteShell, prompter: Prompter | None, runtime: str, repo_dir: str
 ) -> StepResult:
+    desired = _desired_config(runtime)
     for name in REPO_CONFIG_NAMES:
         repo_file = f"{repo_dir}/{name}"
         if shell.run(["test", "-f", repo_file]).returncode == 0:
-            return StepResult(
-                "remote-config",
-                "action",
-                f"{repo_file} is tracked in the repository and takes precedence; "
-                "add runtime, credentials.github and state_scope there",
-            )
+            return _check_tracked_config(shell, repo_file, desired)
 
     target = GLOBAL_CONFIG_CANDIDATES[0]
     current: dict[str, Any] = {}
@@ -226,21 +290,13 @@ def _remote_config(
         result = shell.run(["cat", candidate])
         if result.returncode != 0:
             continue
-        try:
-            loaded = yaml.safe_load(result.stdout)
-        except yaml.YAMLError:
-            return StepResult("remote-config", "action", f"{candidate} is not valid YAML")
-        loaded = loaded or {}
-        if not isinstance(loaded, dict):
-            return StepResult("remote-config", "action", f"{candidate} does not contain a mapping")
-        if not isinstance(loaded.get("credentials", {}), dict):
-            return StepResult(
-                "remote-config", "action", f"{candidate}: 'credentials' must be a mapping"
-            )
-        target, current = candidate, loaded
+        parsed = _parse_config(candidate, result.stdout)
+        if isinstance(parsed, StepResult):
+            return parsed
+        target, current = candidate, parsed
         break
 
-    merged, missing, conflicts = _merge(current, _desired_config(runtime))
+    merged, missing, conflicts = _merge(current, desired)
     if conflicts:
         return StepResult(
             "remote-config",
@@ -263,12 +319,16 @@ def _image(shell: RemoteShell, repo: str, agent: str) -> StepResult:
     return StepResult("image", "ok", agent)
 
 
+def _ssh_command(destination: str, command: list[str]) -> str:
+    # ssh re-joins its arguments for the remote shell, so the remote part is quoted twice.
+    remote = shlex.join(["bash", "-lc", shlex.join(command)])
+    quoted = f'"{remote}"' if _DOUBLE_QUOTE_SAFE.fullmatch(remote) else shlex.quote(remote)
+    return f"ssh -t {shlex.quote(destination)} {quoted}"
+
+
 def _login_hint(shell: RemoteShell, repo: str, agent: str) -> StepResult:
-    return StepResult(
-        "login",
-        "info",
-        f"Log the agent in once: ssh -t {shell.destination} agentbox run {repo} --agent {agent}",
-    )
+    command = _ssh_command(shell.destination, ["agentbox", "run", repo, "--agent", agent])
+    return StepResult("login", "info", f"Log the agent in once: {command}")
 
 
 def run_setup(

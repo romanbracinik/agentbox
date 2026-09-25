@@ -41,7 +41,7 @@ class RemoteShell:
     def argv(self, command: Sequence[str], *, tty: bool = False) -> list[str]:
         # A login shell puts pipx/user tools on PATH for non-interactive ssh sessions.
         remote = shlex.join(["bash", "-lc", shlex.join(command)])
-        return ["ssh", "-t" if tty else "-T", "-o", "BatchMode=yes", self.destination, remote]
+        return ["ssh", "-t" if tty else "-T", "-o", "BatchMode=yes", "--", self.destination, remote]
 
     def run(self, command: Sequence[str], *, input: str | None = None) -> CommandResult:
         return self._runner(self.argv(command), input=input)
