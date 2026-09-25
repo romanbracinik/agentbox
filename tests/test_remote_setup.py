@@ -250,5 +250,7 @@ def test_doctor_never_writes(tmp_path: Path) -> None:
     assert _statuses(results)["agentbox"] == "action"
     assert not any(c.input is not None for c in runner.calls)
     assert not any(
-        word in c for c in runner.remote_commands() for word in ("pipx", "clone", "build")
+        word in c
+        for c in runner.remote_commands()
+        for word in ("pipx install", "git clone", "agentbox build")
     )

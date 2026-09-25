@@ -21,7 +21,7 @@ Status = Literal["ok", "fixed", "action", "info"]
 WheelBuilder = Callable[[], "Path | None"]
 REMOTE_CONFIG = ".config/agentbox/config.yaml"
 WHEEL_DIR = ".cache/agentbox"
-TOOLS = ("git", "tmux")
+TOOLS = ("git", "tmux", "pipx")
 
 
 @dataclass(frozen=True)
