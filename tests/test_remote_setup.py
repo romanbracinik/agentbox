@@ -521,3 +521,32 @@ def test_ssh_command_survives_both_shells(repo: str) -> None:
     remote = shlex.split(" ".join(ssh[3:]))
     assert remote[:2] == ["bash", "-lc"]
     assert shlex.split(remote[2]) == ["agentbox", "run", repo]
+
+
+def test_force_reinstall_installs_same_version_after_confirmation(tmp_path: Path) -> None:
+    registry = tmp_path / "r.yaml"
+    save_host(
+        "vm",
+        RemoteHost(
+            ssh="vm",
+            repository="git@github.com:o/r.git",
+            base_dir="/srv/ab/r",
+            agent="claude",
+            runtime="docker",
+        ),
+        registry,
+    )
+    prompter = ScriptedPrompter()
+    runner = _healthy()
+    results = run_setup(
+        "vm",
+        RemoteShell("vm", runner),
+        prompter,
+        local_version=VERSION,
+        wheel_builder=_no_wheel,
+        registry=registry,
+        force_reinstall=True,
+    )
+    assert any("agentbox" in text for text in prompter.confirmed)
+    assert f"pipx install --force agentbox=={VERSION}" in runner.remote_commands()
+    assert {r.name: r.status for r in results}["agentbox"] == "fixed"

@@ -134,9 +134,11 @@ def _agentbox(
     prompter: Prompter | None,
     local_version: str,
     wheel_builder: WheelBuilder | None,
+    force: bool = False,
 ) -> StepResult:
     remote = _remote_version(shell)
-    if remote == local_version:
+    # Same version string does not mean same code when the laptop runs from a source checkout.
+    if remote == local_version and not force:
         return StepResult("agentbox", "ok", local_version)
     found = remote or "not installed"
     if prompter is None or wheel_builder is None:
@@ -339,6 +341,7 @@ def run_setup(
     local_version: str,
     wheel_builder: WheelBuilder,
     registry: Path | None = None,
+    force_reinstall: bool = False,
 ) -> list[StepResult]:
     existing = load_registry(registry).get(name)
     results: list[StepResult] = []
@@ -356,7 +359,7 @@ def run_setup(
     results.append(_tools(shell))
     if stop():
         return results
-    results.append(_agentbox(shell, prompter, local_version, wheel_builder))
+    results.append(_agentbox(shell, prompter, local_version, wheel_builder, force_reinstall))
     if stop():
         return results
     results.append(_github(shell))

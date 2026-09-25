@@ -48,7 +48,12 @@ def remote() -> None:
 @remote.command()
 @click.argument("host")
 @click.option("--ssh", "ssh_destination", help="ssh destination; defaults to HOST for a new remote")
-def setup(host: str, ssh_destination: str | None) -> None:
+@click.option(
+    "--reinstall",
+    is_flag=True,
+    help="Reinstall agentbox on the remote even if the version matches (source checkouts)",
+)
+def setup(host: str, ssh_destination: str | None, reinstall: bool) -> None:
     """Prepare and validate a remote host (re-runnable)."""
     validate_remote_name(host)
     existing = load_registry().get(host)
@@ -59,6 +64,7 @@ def setup(host: str, ssh_destination: str | None) -> None:
         ClickPrompter(),
         local_version=__version__,
         wheel_builder=local_wheel,
+        force_reinstall=reinstall,
     )
     _report(results)
 
