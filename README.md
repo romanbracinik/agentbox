@@ -176,6 +176,11 @@ agentbox server run WORKSPACE             Run an administrator-approved workload
 agentbox server broker                   Serve the credential/egress broker
 agentbox server review-once              Poll assigned PRs for reference review
 
+agentbox remote setup|doctor HOST          Prepare/validate an SSH host for remote tasks
+agentbox remote run HOST --name T --branch B [-- ARGS]   Start a task in a worktree + tmux session
+agentbox remote list|attach|logs|stop HOST [TASK]        Manage remote tasks
+agentbox remote service setup|start|status|logs|stop HOST [NAME]   Hermes gateway on the remote
+
 agentbox upgrade             Upgrade agentbox (if installed via install.sh)
 ```
 
@@ -838,6 +843,105 @@ verify the configured platform separately. Provider/bot tokens must be explicitl
 configured or forwarded with `--env NAME`; platform configuration is never
 inferred from host files. Logs are emitted by Hermes and may contain sensitive
 application output. No authenticated third-party bot traffic is exercised by CI.
+
+### Remote tasks
+
+Start an agent task from your laptop and let it run on an always-on Linux host over
+SSH (for example a private VM reachable via IAP). The laptop only needs to be open to
+start, attach or inspect a task; closing it does not stop the task.
+
+Prerequisites on the remote host: Podman or Docker usable by the SSH user without
+`sudo`, `git`, `tmux`, `pipx`, outbound network access, and `gh` logged in if tasks
+push or open PRs. The remote runs the local `run`/`service` profile; `deploy/gcp`
+(the networkless, broker-only `server` profile) is not a target for remote tasks.
+
+Register and validate a host with the setup wizard, re-runnable and safe to stop and
+resume:
+
+```bash
+agentbox remote setup agent-runner --ssh agent-runner.example.com
+agentbox remote setup agent-runner   # re-run: defaults --ssh to the stored/host value
+agentbox remote doctor agent-runner  # read-only re-check, no changes
+```
+
+Each run prints one line per step and stops at the first step that needs action:
+
+```
+ssh, runtime, tools, agentbox, github, repository, remote-config, image, save, login
+```
+
+`ssh` checks connectivity; `runtime` detects Podman/Docker; `tools` requires `git`,
+`tmux` and `pipx`; `agentbox` installs/upgrades the remote CLI to match the laptop
+version (a source checkout is streamed to the remote as a base64-encoded wheel over
+the SSH connection, otherwise `pipx install agentbox==<version>` is used); `github`
+checks `gh auth status`; `repository` clones or verifies the configured Git
+repository; `remote-config` adds `runtime`, `credentials.github` and
+`state_scope: repository`. Agentbox loads the first config file it finds
+(repository-tracked `.agentbox.yaml`/`.yml`, then the remote user's global
+`~/.config/agentbox/config.yaml`/`.yml` or `~/.agentbox.yaml`) and never merges
+across files. If the repository tracks its own config, the wizard only reports what
+is missing there instead of writing to it; otherwise it adds missing keys to the
+first existing global file — creating `~/.config/agentbox/config.yaml` only if none
+exists — after asking for confirmation. A key already present with a different
+value is reported, never overwritten; `image` builds the container image so the
+first task does not wait for it; `save` writes the registry entry; `login` is
+informational only — it prints the command to log the agent in once on the remote
+and is not verified automatically, since agent credentials are not inspected.
+
+Registered hosts live in `~/.config/agentbox/remotes.yaml`, written only by
+`remote setup`:
+
+```yaml
+remotes:
+  agent-runner:
+    ssh: agent-runner.example.com
+    repository: git@github.com:org/repo.git
+    base_dir: /home/user/agentbox-remote/repo   # absolute path on the remote
+    agent: claude
+    runtime: docker
+```
+
+All five keys are required; `runtime` is detected by the wizard, the rest come from
+the user. The file contains no credentials.
+
+Each task gets its own Git worktree under `<base_dir>/wt/<task>` and its own tmux
+session, so it survives an SSH disconnect:
+
+```bash
+agentbox remote run agent-runner --name fix-123 --branch fix-123 -- "fix the failing test"
+agentbox remote list agent-runner
+agentbox remote attach agent-runner fix-123     # detach with Ctrl+b d
+agentbox remote logs agent-runner fix-123 --tail 200
+agentbox remote stop agent-runner fix-123 --remove-worktree   # refused if the worktree is dirty
+```
+
+`--branch` must already exist on the remote's Git origin; `remote run` does not
+transfer uncommitted or untracked laptop changes, and there is no session handoff
+between the laptop and the remote. Unknown options before `--` are rejected;
+everything after `--` is forwarded to the agent unchanged.
+
+A Hermes gateway can run the same way. `remote service setup` configures the
+repository's Hermes HOME interactively (it takes no service/container name — Hermes
+setup is per repository, not per container); `start`/`status`/`logs`/`stop` manage
+the named service container through the existing `agentbox service` commands, which
+are Hermes-only:
+
+```bash
+agentbox remote service setup agent-runner
+agentbox remote service start agent-runner hermes --restart-policy unless-stopped
+agentbox remote service status agent-runner hermes
+agentbox remote service logs agent-runner hermes --tail 100
+agentbox remote service stop agent-runner hermes
+```
+
+All task and service worktrees share one private agent HOME per repository through
+`state_scope: repository` (default remains `workspace`, keyed per worktree path).
+`state_scope: repository` requires a Git repository and keys the HOME by the Git
+common directory instead of the worktree path.
+
+Limits: no transfer of uncommitted laptop changes, no live session handoff, no
+nested Docker/Compose inside the task container, and no task queue — each
+`remote run` starts immediately.
 
 ### Prebuilt images
 

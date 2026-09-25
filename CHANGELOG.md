@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Added `agentbox remote` (setup wizard, doctor, tasks, Hermes services) and `state_scope: repository`.
+
 ## 0.5.0a1 — always-on preview
 
 - Add administrator-owned server policy and networkless non-root batch execution.

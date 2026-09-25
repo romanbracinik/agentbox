@@ -22,7 +22,7 @@ task runs. A one-time setup wizard prepares and validates the host.
 ## User-facing commands
 
 ```bash
-agentbox remote setup <host>                          # wizard, re-runnable
+agentbox remote setup <host> [--ssh DEST]             # wizard, re-runnable
 agentbox remote doctor <host>                         # read-only validation
 agentbox remote run <host> --name <task> --branch <branch> [--agent claude] [-- AGENT_ARGS...]
 agentbox remote list <host>
@@ -31,21 +31,28 @@ agentbox remote logs <host> <task> [--tail N]
 agentbox remote stop <host> <task> [--remove-worktree]
 ```
 
-Long-running agent services (the existing `agentbox service` lifecycle, e.g. a Hermes
-gateway) are managed the same way:
+`--ssh` sets the ssh destination for `setup`. Without it, a new (not yet registered)
+remote uses `<host>` itself as the ssh destination; a registered remote's stored `ssh`
+value is used unless `--ssh` overrides it.
+
+Long-running agent services (the existing `agentbox service` lifecycle, which is
+Hermes-only) are managed the same way, but without any `--agent` flag:
 
 ```bash
-agentbox remote service setup  <host> <service> [--agent hermes]   # interactive: ssh -t ... -- gateway setup
-agentbox remote service start  <host> <service> [--agent hermes] [--restart-policy POLICY] [--env NAME ...]
-agentbox remote service status <host> <service>
-agentbox remote service logs   <host> <service> [--tail N]
-agentbox remote service stop   <host> <service>
+agentbox remote service setup  <host>                                          # interactive: gateway setup
+agentbox remote service start  <host> <name> [--restart-policy POLICY] [--env NAME ...]
+agentbox remote service status <host> <name>
+agentbox remote service logs   <host> <name> [--tail N]
+agentbox remote service stop   <host> <name>
 ```
 
-These run the existing `agentbox service` commands on the remote against
-`<base_dir>/repo`; the service name is passed through as the container name. `setup`
-allocates a TTY (`ssh -t`) because the agent's own configuration flow is interactive;
-agentbox does not capture or store what the user enters there.
+`service setup` takes only `<host>` — no service/container name. It runs
+`agentbox run <base_dir>/repo --agent hermes -- gateway setup` interactively (an
+allocated TTY, since the flow is interactive); this configures the per-repository
+Hermes HOME, not a container, so it has nothing to name. `service start`/`status`/
+`logs`/`stop` take a `<name>` and run the existing `agentbox service` commands on the
+remote against `<base_dir>/repo`, with `<name>` passed through as the container name.
+agentbox does not capture or store what the user enters during `gateway setup`.
 
 `<host>` is a name registered by `remote setup`. It maps to an SSH destination
 that is handed to `ssh` unchanged, so `~/.ssh/config` aliases, `ProxyCommand` (IAP)
@@ -62,11 +69,13 @@ remotes:
     repository: git@github.com:keboola/connection.git
     base_dir: /home/<user>/agentbox-remote/connection   # absolute path on the remote
     agent: claude                  # default agent for `remote run`
+    runtime: docker                # podman or docker, detected by the wizard
 ```
 
-All four keys are required. `remote setup` asks for each value and never guesses;
-other commands fail with an actionable error when the host is unknown or a key is
-missing. The file contains no credentials.
+All five keys are required. `remote setup` asks for `ssh`, `repository`, `base_dir`
+and `agent`; `runtime` is detected (Podman preferred, falling back to Docker) rather
+than asked. Other commands fail with an actionable error when the host is unknown or
+a key is missing. The file contains no credentials.
 
 ## Remote layout
 
@@ -101,30 +110,43 @@ step it cannot complete. Re-running skips satisfied steps.
 2. **Runtime**: detect Podman or Docker usable by the SSH user without sudo. If
    missing, print the distribution-specific install command and stop. The wizard
    never runs sudo.
-3. **Tools**: require `git` and `tmux`; print install commands when missing.
+3. **Tools**: require `git`, `tmux` and `pipx`; print install commands when missing.
 4. **agentbox parity**: the remote must run the same version as the laptop. When the
-   local agentbox runs from a source checkout, build a wheel from it, copy it with
-   `scp` and install it with `pipx`; otherwise install `agentbox==<local version>`
-   with `pipx`. Verify `agentbox --version` matches. Asks for confirmation before
-   installing or upgrading.
+   local agentbox runs from a source checkout, build a wheel from it, stream it to the
+   remote base64-encoded over the existing SSH connection (stdin, not `scp`), and
+   install it with `pipx`; otherwise install `agentbox==<local version>` with `pipx`.
+   Verify `agentbox --version` matches. Asks for confirmation before installing or
+   upgrading.
 5. **GitHub**: run `gh auth status` remotely. When not logged in, print the command
    the user runs in their own terminal (`ssh -t <ssh> gh auth login --web`). The
    wizard never reads, prints or transfers a token.
 6. **Repository**: ask for `repository` and `base_dir`, then clone into
    `<base_dir>/repo` if absent; if present, verify its origin matches.
-7. **Remote config**: worktrees do not contain untracked files from the primary clone,
-   so settings go to the remote user's global `~/.config/agentbox/config.yaml`:
-   `credentials.github: true` and `state_scope: repository` (see below). The wizard
-   shows the exact keys it will add and asks before writing; existing keys with a
-   different value are reported, never overwritten.
+7. **Remote config**: settings needed are `runtime`, `credentials.github: true` and
+   `state_scope: repository` (see below). agentbox loads the first config file it
+   finds and never merges across files (repository-tracked `.agentbox.yaml`/`.yml`
+   first, then the remote user's global `~/.config/agentbox/config.yaml`/`.yml` or
+   `~/.agentbox.yaml`). If the repository tracks its own config, the wizard reports
+   what is missing there as `action` and never writes to it, since a repo-tracked
+   file always wins and worktrees do not carry untracked files from the primary
+   clone. Otherwise it adds any missing keys to the first existing global file,
+   creating `~/.config/agentbox/config.yaml` only if none exists yet, after asking
+   for confirmation. A key already present with a different value is reported as
+   `action` and never overwritten. Malformed or non-mapping config (invalid YAML, a
+   non-mapping document, a non-mapping `credentials`) is also reported as `action`,
+   not a crash.
 8. **Image**: run `agentbox build --agent <agent>` remotely so the first task does
    not wait for a build.
-9. **Agent login**: print the command that logs the agent in once on the remote
-   (`ssh -t <ssh> agentbox run <base_dir>/repo --agent <agent>`), then confirm with
-   `doctor`. Login state lives on the remote, shared by all worktrees of the repo.
-10. **Save** the registry entry and finish with `remote doctor`.
+9. **Save** the registry entry.
+10. **Agent login** (informational, does not block): print the command that logs the
+    agent in once on the remote (`ssh -t <ssh> agentbox run <base_dir>/repo --agent
+    <agent>`). This is not verified automatically — agentbox does not inspect agent
+    credentials — so this step always reports `info`, never `action`. Login state
+    lives on the remote, shared by all worktrees of the repo.
 
-`remote doctor` runs the checks of steps 1-9 without changing anything.
+`remote doctor` runs the checks of steps 1-7 and the step-10 login hint, without
+changing anything and without a save step. Invalid wizard answers (for example a
+non-absolute `base_dir`) are reported as `action`, not a crash.
 
 ## Shared agent state across worktrees
 
@@ -145,15 +167,19 @@ they operate on the resolved HOME path. `state show` reports the scope in use.
 ## Error handling
 
 - Every remote step uses `ssh -o BatchMode=yes` and surfaces stderr verbatim.
+- `run` rejects unknown options before `--`; everything after `--` is forwarded to
+  the agent unchanged, including strings that look like flags.
 - `run` refuses an existing task name (tmux session or worktree) instead of reusing it.
 - `run` fails when `--branch` does not exist on the remote after `git fetch`.
 - `stop` without `--remove-worktree` keeps the worktree so work is not lost; with it,
   refuse when the worktree has uncommitted changes.
 - No command prints environment values or file contents from the remote HOME.
+- Invalid wizard answers and malformed or non-mapping remote config are reported as
+  `action`, never raised as an unhandled error.
 
 ## Testing
 
-- Unit tests with an injected command runner that records ssh/scp invocations and
+- Unit tests with an injected command runner that records ssh invocations and
   returns scripted results: argument quoting, registry validation, each wizard step
   (OK / missing / failure), name validation, refusal paths.
 - `state_scope` tests: shared HOME for two worktrees of one repository, distinct HOME

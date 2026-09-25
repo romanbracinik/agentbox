@@ -111,3 +111,10 @@ remaining findings and update instructions. Raw findings remain visible.
 - [x] Live provider probe: Claude Code → Unix broker → Anthropic Haiku, with Secret Manager credentials outside the workload.
 - [x] Live one-shot review: repository-authorized DEV token, real PR diff through the GitHub controller socket, Anthropic response and unchanged head SHA verified. No GitHub comment published.
 - [ ] Complete DEV acceptance: secret rotation, scheduled trigger/publication and measured one-command onboarding within 15 minutes. One-shot pilot used staged startup and withheld publication.
+
+## Remote tasks and services over SSH (preview)
+
+- [x] Implemented: setup wizard, doctor, task run/list/attach/logs/stop and Hermes
+  service management on an SSH host, laptop-side registry, `state_scope: repository`.
+- [ ] Real-host validation pending: see the manual acceptance checklist in
+  [the design spec](docs/specs/2026-09-25-remote-tasks-design.md).
