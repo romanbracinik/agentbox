@@ -48,7 +48,7 @@ def test_status_logs_stop_pass_through() -> None:
     service_logs(shell, "bot", 20)
     stop_service(shell, "bot")
     assert runner.remote_commands()[1:] == [
-        "agentbox service logs bot --tail 20",
+        "bash -c '\"$@\" 2>&1' _ agentbox service logs bot --tail 20",
         "agentbox service stop bot",
     ]
 

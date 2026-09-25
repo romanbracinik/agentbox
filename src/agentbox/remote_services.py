@@ -52,8 +52,9 @@ def service_status(shell: RemoteShell, name: str) -> str:
 
 def service_logs(shell: RemoteShell, name: str, tail: int) -> str:
     validate_name(name)
+    # Container stderr is part of the service log, not an ssh diagnostic.
     return shell.check(
-        ["agentbox", "service", "logs", name, "--tail", str(tail)],
+        ["bash", "-c", '"$@" 2>&1', "_", "agentbox", "service", "logs", name, "--tail", str(tail)],
         error=f"Cannot read logs of {name}",
     )
 
