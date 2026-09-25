@@ -850,6 +850,10 @@ Start an agent task from your laptop and let it run on an always-on Linux host o
 SSH (for example a private VM reachable via IAP). The laptop only needs to be open to
 start, attach or inspect a task; closing it does not stop the task.
 
+For preparing a host from scratch (SSH over IAP, Docker access, `gh`, agent login,
+Hermes and WhatsApp) and known problems, follow the
+[remote host setup guide](docs/remote-tasks.md).
+
 Prerequisites on the remote host: Podman or Docker usable by the SSH user without
 `sudo`, `git`, `tmux`, `pipx`, outbound network access, and `gh` logged in if tasks
 push or open PRs. The remote runs the local `run`/`service` profile; `deploy/gcp`
