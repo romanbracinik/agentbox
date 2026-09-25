@@ -17,7 +17,7 @@ task runs. A one-time setup wizard prepares and validates the host.
 - Nested Docker/Compose inside the task container. Project checks that need it run
   in CI on the pull request.
 - A queue or concurrency cap. Each `remote run` starts immediately.
-- Changes to the `server` profile, broker or scheduled review.
+- Changes to the `server` profile, broker, scheduled review or `deploy/gcp`.
 
 ## User-facing commands
 
@@ -30,6 +30,22 @@ agentbox remote attach <host> <task>
 agentbox remote logs <host> <task> [--tail N]
 agentbox remote stop <host> <task> [--remove-worktree]
 ```
+
+Long-running agent services (the existing `agentbox service` lifecycle, e.g. a Hermes
+gateway) are managed the same way:
+
+```bash
+agentbox remote service setup  <host> <service> [--agent hermes]   # interactive: ssh -t ... -- gateway setup
+agentbox remote service start  <host> <service> [--agent hermes] [--restart-policy POLICY] [--env NAME ...]
+agentbox remote service status <host> <service>
+agentbox remote service logs   <host> <service> [--tail N]
+agentbox remote service stop   <host> <service>
+```
+
+These run the existing `agentbox service` commands on the remote against
+`<base_dir>/repo`; the service name is passed through as the container name. `setup`
+allocates a TTY (`ssh -t`) because the agent's own configuration flow is interactive;
+agentbox does not capture or store what the user enters there.
 
 `<host>` is a name registered by `remote setup`. It maps to an SSH destination
 that is handed to `ssh` unchanged, so `~/.ssh/config` aliases, `ProxyCommand` (IAP)
@@ -62,6 +78,18 @@ missing. The file contains no credentials.
 Each task runs in a tmux session named `agentbox-<task>` executing
 `agentbox run <base_dir>/wt/<task> --agent <agent> --name agentbox-task-<task> -- AGENT_ARGS`.
 Task names are validated with the existing container-name rules.
+
+## Remote host requirements
+
+The remote runs the local `run`/`service` profile, not the `server` profile:
+
+- Linux with Podman or Docker usable by the SSH user without sudo.
+- Outbound network access for the agent, Git, package registries and model APIs.
+  The `deploy/gcp` module (deny-all egress, broker, baked image) is built for the
+  `server` profile and is not a target for remote tasks.
+- `git`, `tmux`, `pipx`, and `gh` logged in for the SSH user when tasks push or open PRs.
+
+Membership in the `docker` group is root-equivalent on the host; use a dedicated host.
 
 ## Setup wizard (`remote setup <host>`)
 
