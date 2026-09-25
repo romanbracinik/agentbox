@@ -117,7 +117,7 @@ def test_start_keeps_pane_after_agent_exits() -> None:
     runner = _branch_runner()
     start_task(_shell(runner), HOST, "t", "main", "claude", [])
     cmds = runner.remote_commands()
-    assert cmds[-1] == "tmux set-option -t =agentbox-t remain-on-exit on"
+    assert cmds[-1] == "tmux set-option -t =agentbox-t: remain-on-exit on"
     assert cmds[-2].startswith("tmux new-session -d -s agentbox-t ")
 
 
