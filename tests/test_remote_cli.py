@@ -77,6 +77,13 @@ def test_list_prints_status() -> None:
     assert result.output.splitlines() == ["t1\trunning", "t2\tstopped", "t3\texited"]
 
 
+def test_list_without_tasks_says_so() -> None:
+    runner = FakeRunner({"list-panes": fail("no server running"), "ls -1": fail("")})
+    result = _invoke(runner, ["list", "vm"])
+    assert result.exit_code == 0
+    assert result.output.strip() == "No tasks on vm"
+
+
 def test_unknown_host_is_clear_error() -> None:
     result = _invoke(FakeRunner(), ["list", "other"])
     assert result.exit_code != 0

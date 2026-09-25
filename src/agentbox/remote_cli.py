@@ -99,7 +99,10 @@ def run_task(
 def list_command(host: str) -> None:
     """List tasks and their state (running, exited, stopped)."""
     remote_host = get_host(host)
-    for status in list_tasks(make_shell(remote_host), remote_host):
+    tasks = list_tasks(make_shell(remote_host), remote_host)
+    if not tasks:
+        click.echo(f"No tasks on {host}")
+    for status in tasks:
         click.echo(f"{status.name}\t{status.state}")
 
 
