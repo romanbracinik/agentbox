@@ -40,6 +40,7 @@ def _healthy(**overrides: object) -> FakeRunner:
         "podman info": fail("no podman"),
         "agentbox --version": out(f"agentbox, version {VERSION}\n"),
         "remote get-url origin": out("git@github.com:o/r.git\n"),
+        "symbolic-ref -q HEAD": fail(""),
         # No repo-tracked config by default; the wizard falls back to the global files.
         "test -f /srv/ab/r/repo/.agentbox.yaml": fail(""),
         "test -f /srv/ab/r/repo/.agentbox.yml": fail(""),
@@ -185,7 +186,37 @@ def test_clones_missing_repository(tmp_path: Path) -> None:
         wheel_builder=lambda: None,
         registry=tmp_path / "r.yaml",
     )
-    assert "git clone git@github.com:o/r.git /srv/ab/r/repo" in runner.remote_commands()
+    cmds = runner.remote_commands()
+    clone = cmds.index("git clone git@github.com:o/r.git /srv/ab/r/repo")
+    assert cmds[clone + 1] == "git -C /srv/ab/r/repo checkout --detach"
+
+
+def test_existing_clone_on_branch_is_detached(tmp_path: Path) -> None:
+    runner = _healthy(**{"symbolic-ref -q HEAD": out("refs/heads/main\n")})
+    results = run_setup(
+        "vm",
+        RemoteShell("vm", runner),
+        ScriptedPrompter(ANSWERS),
+        local_version=VERSION,
+        wheel_builder=lambda: None,
+        registry=tmp_path / "r.yaml",
+    )
+    assert _statuses(results)["repository"] == "fixed"
+    assert "git -C /srv/ab/r/repo checkout --detach" in runner.remote_commands()
+
+
+def test_doctor_reports_attached_clone_without_detaching() -> None:
+    host = RemoteHost(
+        ssh="vm",
+        repository="git@github.com:o/r.git",
+        base_dir="/srv/ab/r",
+        agent="claude",
+        runtime="docker",
+    )
+    runner = _healthy(**{"symbolic-ref -q HEAD": out("refs/heads/main\n")})
+    results = run_doctor(host, RemoteShell("vm", runner), local_version=VERSION)
+    assert _statuses(results)["repository"] == "action"
+    assert not any("checkout" in c for c in runner.remote_commands())
 
 
 def test_remote_config_conflict_not_overwritten(tmp_path: Path) -> None:

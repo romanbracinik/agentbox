@@ -16,6 +16,8 @@ CONTAINER_PREFIX = "agentbox-task-"
 _BRANCH = re.compile(r"[A-Za-z0-9._/-]+")
 # tmux rewrites "." and ":" in session names, so task names exclude them.
 _TASK = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_-]*")
+# git >= 2.42 says "used by worktree at", older versions "already checked out at".
+_USED_BY_WORKTREE = re.compile(r"(?:worktree|checked out) at '([^']+)'")
 
 
 @dataclass(frozen=True)
@@ -72,8 +74,12 @@ def start_task(
     shell.check(
         ["git", "-C", host.repo_dir, "fetch", "origin", branch], error=f"Cannot fetch {branch}"
     )
-    shell.check(
+    _sync_local_branch(shell, host, branch)
+    _git_worktree_op(
+        shell,
+        host,
         ["git", "-C", host.repo_dir, "worktree", "add", worktree, branch],
+        branch,
         error=f"Cannot create worktree for {branch}",
     )
     inner = shlex.join(
@@ -103,6 +109,46 @@ def start_task(
             inner,
         ],
         error=f"Cannot start task {task}",
+    )
+
+
+def _git_worktree_op(
+    shell: RemoteShell, host: RemoteHost, command: list[str], branch: str, *, error: str
+) -> None:
+    result = shell.run(command)
+    if result.returncode == 0:
+        return
+    stderr = result.stderr.strip()
+    match = _USED_BY_WORKTREE.search(stderr)
+    path = match.group(1) if match else ""
+    prefix = f"{host.worktrees_dir}/"
+    if path.startswith(prefix) and "/" not in path[len(prefix) :]:
+        raise RemoteError(f"Branch {branch} is already checked out by task {path[len(prefix) :]}")
+    raise RemoteError(f"{error}: {stderr or f'exit {result.returncode}'}")
+
+
+def _sync_local_branch(shell: RemoteShell, host: RemoteHost, branch: str) -> None:
+    repo = host.repo_dir
+    local = f"refs/heads/{branch}"
+    if shell.run(["git", "-C", repo, "rev-parse", "--verify", "--quiet", local]).returncode != 0:
+        return
+    ancestor = shell.run(
+        ["git", "-C", repo, "merge-base", "--is-ancestor", local, f"refs/remotes/origin/{branch}"]
+    )
+    if ancestor.returncode == 1:
+        raise RemoteError(
+            f"Local branch {branch} on the remote has commits not on origin; "
+            "push or delete it first"
+        )
+    if ancestor.returncode != 0:
+        detail = ancestor.stderr.strip() or f"exit {ancestor.returncode}"
+        raise RemoteError(f"Cannot compare {branch} with origin/{branch}: {detail}")
+    _git_worktree_op(
+        shell,
+        host,
+        ["git", "-C", repo, "branch", "-f", branch, f"origin/{branch}"],
+        branch,
+        error=f"Cannot fast-forward {branch}",
     )
 
 

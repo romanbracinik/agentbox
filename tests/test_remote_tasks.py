@@ -139,6 +139,63 @@ def test_start_reports_missing_branch() -> None:
         start_task(_shell(runner), HOST, "dmd-1", "x", "claude", [])
 
 
+def _branch_runner(**responses: CommandResult) -> FakeRunner:
+    return FakeRunner({"tmux has-session": fail(""), "test -e": fail(""), **responses})
+
+
+def test_start_fresh_branch_is_created_by_worktree_add() -> None:
+    runner = _branch_runner(**{"rev-parse --verify": fail("")})
+    start_task(_shell(runner), HOST, "t", "feature", "claude", [])
+    cmds = runner.remote_commands()
+    assert "git -C /srv/ab/r/repo rev-parse --verify --quiet refs/heads/feature" in cmds
+    assert not any("is-ancestor" in c or "branch -f" in c for c in cmds)
+    assert "git -C /srv/ab/r/repo worktree add /srv/ab/r/wt/t feature" in cmds
+
+
+def test_start_fast_forwards_stale_local_branch() -> None:
+    runner = _branch_runner()
+    start_task(_shell(runner), HOST, "t", "main", "claude", [])
+    cmds = runner.remote_commands()
+    ancestor = (
+        "git -C /srv/ab/r/repo merge-base --is-ancestor refs/heads/main refs/remotes/origin/main"
+    )
+    forward = "git -C /srv/ab/r/repo branch -f main origin/main"
+    add = "git -C /srv/ab/r/repo worktree add /srv/ab/r/wt/t main"
+    fetch = "git -C /srv/ab/r/repo fetch origin main"
+    assert cmds.index(fetch) < cmds.index(ancestor) < cmds.index(forward) < cmds.index(add)
+
+
+def test_start_refuses_diverged_local_branch() -> None:
+    runner = _branch_runner(**{"is-ancestor": fail("", 1)})
+    with pytest.raises(RemoteError, match="has commits not on origin"):
+        start_task(_shell(runner), HOST, "t", "main", "claude", [])
+    cmds = runner.remote_commands()
+    assert not any("branch -f" in c or "worktree add" in c for c in cmds)
+
+
+@pytest.mark.parametrize(
+    ("needle", "stderr"),
+    [
+        (
+            "branch -f",
+            "fatal: cannot force update the branch 'main' used by worktree at '/srv/ab/r/wt/fix'",
+        ),
+        ("worktree add", "fatal: 'main' is already used by worktree at '/srv/ab/r/wt/fix'"),
+    ],
+)
+def test_start_names_task_holding_the_branch(needle: str, stderr: str) -> None:
+    runner = _branch_runner(**{needle: fail(stderr, 128)})
+    with pytest.raises(RemoteError, match="checked out by task fix"):
+        start_task(_shell(runner), HOST, "t", "main", "claude", [])
+
+
+def test_start_surfaces_git_stderr_for_foreign_worktree() -> None:
+    stderr = "fatal: 'main' is already used by worktree at '/home/u/elsewhere'"
+    runner = _branch_runner(**{"worktree add": fail(stderr, 128)})
+    with pytest.raises(RemoteError, match="/home/u/elsewhere"):
+        start_task(_shell(runner), HOST, "t", "main", "claude", [])
+
+
 def test_list_combines_sessions_and_worktrees() -> None:
     runner = FakeRunner({"list-sessions": out("agentbox-a\nother\n"), "ls -1": out("a\nb\n")})
     assert list_tasks(_shell(runner), HOST) == [TaskStatus("a", True), TaskStatus("b", False)]

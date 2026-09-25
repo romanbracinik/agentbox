@@ -159,12 +159,25 @@ def _repository(shell: RemoteShell, repository: str, base_dir: str, *, write: bo
             return StepResult(
                 "repository", "action", f"{repo} has origin {origin.strip()}, expected {repository}"
             )
-        return StepResult("repository", "ok", repo)
+        # A branch held by the primary clone cannot be checked out in a task worktree.
+        if shell.run(["git", "-C", repo, "symbolic-ref", "-q", "HEAD"]).returncode != 0:
+            return StepResult("repository", "ok", repo)
+        if not write:
+            return StepResult(
+                "repository", "action", f"{repo} is on a branch; run remote setup to detach it"
+            )
+        _detach(shell, repo)
+        return StepResult("repository", "fixed", f"{repo} (detached HEAD)")
     if not write:
         return StepResult("repository", "action", f"{repo} missing; run remote setup")
     shell.check(["mkdir", "-p", f"{base_dir}/wt"], error=f"Cannot create {base_dir}")
     shell.check(["git", "clone", repository, repo], error=f"Cannot clone {repository}")
+    _detach(shell, repo)
     return StepResult("repository", "fixed", repo)
+
+
+def _detach(shell: RemoteShell, repo: str) -> None:
+    shell.check(["git", "-C", repo, "checkout", "--detach"], error=f"Cannot detach HEAD in {repo}")
 
 
 def _desired_config(runtime: str) -> dict[str, Any]:
