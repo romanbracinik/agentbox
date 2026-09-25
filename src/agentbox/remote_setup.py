@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Literal, Protocol, cast
 
 import yaml
+from pydantic import ValidationError
 
 from .exceptions import RemoteError
 from .remote_registry import RemoteHost, load_registry, save_host
@@ -19,7 +20,14 @@ from .remote_ssh import RemoteShell
 
 Status = Literal["ok", "fixed", "action", "info"]
 WheelBuilder = Callable[[], "Path | None"]
-REMOTE_CONFIG = ".config/agentbox/config.yaml"
+# Mirrors agentbox.config.get_config_paths(): a repo-tracked file always wins (it is
+# checked out into every worktree), then the remote user's first existing global file.
+REPO_CONFIG_NAMES = (".agentbox.yaml", ".agentbox.yml")
+GLOBAL_CONFIG_CANDIDATES = (
+    ".config/agentbox/config.yaml",
+    ".config/agentbox/config.yml",
+    ".agentbox.yaml",
+)
 WHEEL_DIR = ".cache/agentbox"
 TOOLS = ("git", "tmux", "pipx")
 
@@ -143,9 +151,10 @@ def _github(shell: RemoteShell) -> StepResult:
 def _repository(shell: RemoteShell, repository: str, base_dir: str, *, write: bool) -> StepResult:
     repo = f"{base_dir}/repo"
     if shell.run(["test", "-d", f"{repo}/.git"]).returncode == 0:
-        origin = shell.check(
-            ["git", "-C", repo, "remote", "get-url", "origin"], error="Cannot read origin"
-        )
+        origin_result = shell.run(["git", "-C", repo, "remote", "get-url", "origin"])
+        if origin_result.returncode != 0:
+            return StepResult("repository", "action", f"{repo} has no origin remote")
+        origin = origin_result.stdout
         if origin.strip() != repository:
             return StepResult(
                 "repository", "action", f"{repo} has origin {origin.strip()}, expected {repository}"
@@ -185,23 +194,51 @@ def _merge(
     return merged, missing, conflicts
 
 
-def _remote_config(shell: RemoteShell, prompter: Prompter | None, runtime: str) -> StepResult:
-    result = shell.run(["cat", REMOTE_CONFIG])
-    current = (yaml.safe_load(result.stdout) or {}) if result.returncode == 0 else {}
+def _remote_config(
+    shell: RemoteShell, prompter: Prompter | None, runtime: str, repo_dir: str
+) -> StepResult:
+    for name in REPO_CONFIG_NAMES:
+        repo_file = f"{repo_dir}/{name}"
+        if shell.run(["test", "-f", repo_file]).returncode == 0:
+            return StepResult(
+                "remote-config",
+                "action",
+                f"{repo_file} is tracked in the repository and takes precedence; "
+                "add runtime, credentials.github and state_scope there",
+            )
+
+    target = GLOBAL_CONFIG_CANDIDATES[0]
+    current: dict[str, Any] = {}
+    for candidate in GLOBAL_CONFIG_CANDIDATES:
+        result = shell.run(["cat", candidate])
+        if result.returncode != 0:
+            continue
+        try:
+            loaded = yaml.safe_load(result.stdout)
+        except yaml.YAMLError:
+            return StepResult("remote-config", "action", f"{candidate} is not valid YAML")
+        loaded = loaded or {}
+        if not isinstance(loaded, dict):
+            return StepResult("remote-config", "action", f"{candidate} does not contain a mapping")
+        if not isinstance(loaded.get("credentials", {}), dict):
+            return StepResult(
+                "remote-config", "action", f"{candidate}: 'credentials' must be a mapping"
+            )
+        target, current = candidate, loaded
+        break
+
     merged, missing, conflicts = _merge(current, _desired_config(runtime))
     if conflicts:
         return StepResult(
             "remote-config",
             "action",
-            f"Edit ~/{REMOTE_CONFIG} on the remote: " + "; ".join(conflicts),
+            f"Edit ~/{target} on the remote: " + "; ".join(conflicts),
         )
     if not missing:
-        return StepResult("remote-config", "ok", f"~/{REMOTE_CONFIG}")
-    if prompter is None or not prompter.confirm(
-        f"Add {', '.join(missing)} to remote ~/{REMOTE_CONFIG}?"
-    ):
+        return StepResult("remote-config", "ok", f"~/{target}")
+    if prompter is None or not prompter.confirm(f"Add {', '.join(missing)} to remote ~/{target}?"):
         return StepResult("remote-config", "action", f"missing {', '.join(missing)}")
-    shell.write_file(REMOTE_CONFIG, yaml.safe_dump(merged, sort_keys=False))
+    shell.write_file(target, yaml.safe_dump(merged, sort_keys=False))
     return StepResult("remote-config", "fixed", ", ".join(missing))
 
 
@@ -261,17 +298,21 @@ def run_setup(
         else prompter.ask("Absolute directory on the remote (base_dir)")
     )
     agent = existing.agent if existing else prompter.ask("Default agent (agent)")
-    host = RemoteHost(
-        ssh=shell.destination,
-        repository=repository,
-        base_dir=base_dir,
-        agent=agent,
-        runtime=cast(Literal["podman", "docker"], runtime),
-    )
+    try:
+        host = RemoteHost(
+            ssh=shell.destination,
+            repository=repository,
+            base_dir=base_dir,
+            agent=agent,
+            runtime=cast(Literal["podman", "docker"], runtime),
+        )
+    except ValidationError as err:
+        results.append(StepResult("registry", "action", str(err)))
+        return results
     results.append(_repository(shell, host.repository, host.base_dir, write=True))
     if stop():
         return results
-    results.append(_remote_config(shell, prompter, runtime))
+    results.append(_remote_config(shell, prompter, runtime, host.repo_dir))
     if stop():
         return results
     results.append(_image(shell, host.repo_dir, host.agent))
@@ -297,7 +338,7 @@ def run_doctor(host: RemoteHost, shell: RemoteShell, *, local_version: str) -> l
         _agentbox(shell, None, local_version, None),
         _github(shell),
         _repository(shell, host.repository, host.base_dir, write=False),
-        _remote_config(shell, None, host.runtime),
+        _remote_config(shell, None, host.runtime, host.repo_dir),
         _login_hint(shell, host.repo_dir, host.agent),
     ]
     return results

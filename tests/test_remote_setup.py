@@ -40,6 +40,9 @@ def _healthy(**overrides: object) -> FakeRunner:
         "podman info": fail("no podman"),
         "agentbox --version": out(f"agentbox, version {VERSION}\n"),
         "remote get-url origin": out("git@github.com:o/r.git\n"),
+        # No repo-tracked config by default; the wizard falls back to the global files.
+        "test -f /srv/ab/r/repo/.agentbox.yaml": fail(""),
+        "test -f /srv/ab/r/repo/.agentbox.yml": fail(""),
         "cat .config/agentbox/config.yaml": out(
             yaml.safe_dump(
                 {"runtime": "docker", "credentials": {"github": True}, "state_scope": "repository"}
@@ -130,7 +133,7 @@ def test_wheel_is_streamed_not_copied_with_scp(tmp_path: Path) -> None:
     wheel = tmp_path / "agentbox-0.5.0a1-py3-none-any.whl"
     wheel.write_bytes(b"wheel-bytes")
     runner = _healthy(**{"agentbox --version": fail("command not found")})
-    with pytest.raises(RemoteError):
+    with pytest.raises(RemoteError, match="still differs"):
         run_setup(
             "vm",
             RemoteShell("vm", runner),
@@ -254,3 +257,97 @@ def test_doctor_never_writes(tmp_path: Path) -> None:
         for c in runner.remote_commands()
         for word in ("pipx install", "git clone", "agentbox build")
     )
+
+
+def test_repo_tracked_config_wins_and_is_not_written(tmp_path: Path) -> None:
+    runner = _healthy(**{"test -f /srv/ab/r/repo/.agentbox.yaml": out("")})
+    results = run_setup(
+        "vm",
+        RemoteShell("vm", runner),
+        ScriptedPrompter(ANSWERS),
+        local_version=VERSION,
+        wheel_builder=lambda: None,
+        registry=tmp_path / "r.yaml",
+    )
+    assert results[-1].name == "remote-config" and results[-1].status == "action"
+    assert "/srv/ab/r/repo/.agentbox.yaml" in results[-1].detail
+    assert not any(c.input is not None for c in runner.calls)
+
+
+def test_remote_config_merges_into_existing_yml_variant(tmp_path: Path) -> None:
+    runner = _healthy(
+        **{
+            "cat .config/agentbox/config.yaml": fail("No such file"),
+            "cat .config/agentbox/config.yml": out(yaml.safe_dump({"runtime": "docker"})),
+        }
+    )
+    run_setup(
+        "vm",
+        RemoteShell("vm", runner),
+        ScriptedPrompter(ANSWERS),
+        local_version=VERSION,
+        wheel_builder=lambda: None,
+        registry=tmp_path / "r.yaml",
+    )
+    writes = [c for c in runner.calls if c.input is not None]
+    assert writes and writes[-1].remote.endswith(".config/agentbox/config.yml")
+    assert yaml.safe_load(writes[-1].input) == {
+        "runtime": "docker",
+        "credentials": {"github": True},
+        "state_scope": "repository",
+    }
+
+
+def test_remote_config_non_mapping_is_action(tmp_path: Path) -> None:
+    runner = _healthy(**{"cat .config/agentbox/config.yaml": out("- just\n- a\n- list\n")})
+    results = run_setup(
+        "vm",
+        RemoteShell("vm", runner),
+        ScriptedPrompter(ANSWERS),
+        local_version=VERSION,
+        wheel_builder=lambda: None,
+        registry=tmp_path / "r.yaml",
+    )
+    assert results[-1].name == "remote-config" and results[-1].status == "action"
+    assert not any(c.input is not None for c in runner.calls)
+
+
+def test_remote_config_malformed_yaml_is_action(tmp_path: Path) -> None:
+    runner = _healthy(**{"cat .config/agentbox/config.yaml": out("runtime: [unterminated\n")})
+    results = run_setup(
+        "vm",
+        RemoteShell("vm", runner),
+        ScriptedPrompter(ANSWERS),
+        local_version=VERSION,
+        wheel_builder=lambda: None,
+        registry=tmp_path / "r.yaml",
+    )
+    assert results[-1].name == "remote-config" and results[-1].status == "action"
+    assert not any(c.input is not None for c in runner.calls)
+
+
+def test_relative_base_dir_is_action_named_registry(tmp_path: Path) -> None:
+    answers = {"repository": "git@github.com:o/r.git", "base_dir": "srv/ab/r", "agent": "claude"}
+    results = run_setup(
+        "vm",
+        RemoteShell("vm", _healthy()),
+        ScriptedPrompter(answers),
+        local_version=VERSION,
+        wheel_builder=lambda: None,
+        registry=tmp_path / "r.yaml",
+    )
+    assert results[-1].name == "registry" and results[-1].status == "action"
+
+
+def test_missing_origin_is_action(tmp_path: Path) -> None:
+    runner = _healthy(**{"remote get-url origin": fail("no such remote 'origin'")})
+    results = run_setup(
+        "vm",
+        RemoteShell("vm", runner),
+        ScriptedPrompter(ANSWERS),
+        local_version=VERSION,
+        wheel_builder=lambda: None,
+        registry=tmp_path / "r.yaml",
+    )
+    assert results[-1].name == "repository" and results[-1].status == "action"
+    assert "no origin remote" in results[-1].detail
