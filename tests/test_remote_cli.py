@@ -2,8 +2,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+import yaml
 from click.testing import CliRunner
 
+from agentbox import __version__
 from agentbox.cli import main
 from agentbox.remote_registry import RemoteHost, save_host
 from agentbox.remote_ssh import RemoteShell
@@ -40,6 +42,27 @@ def test_run_uses_host_default_agent() -> None:
     assert "--agent claude" in runner.remote_commands()[-1]
 
 
+def test_run_rejects_unknown_option_before_separator() -> None:
+    runner = FakeRunner()
+    result = _invoke(
+        runner,
+        ["run", "vm", "--name", "t1", "--branch", "main", "--agnet", "hermes", "--", "do", "it"],
+    )
+    assert result.exit_code != 0
+    assert "No such option" in result.output
+    assert runner.calls == []
+
+
+def test_run_passes_dashed_flag_after_separator_unchanged() -> None:
+    runner = FakeRunner({"tmux has-session": fail(""), "test -e": fail("")})
+    result = _invoke(
+        runner,
+        ["run", "vm", "--name", "t1", "--branch", "main", "--", "--dangerous-flag", "x"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "-- --dangerous-flag x" in runner.remote_commands()[-1]
+
+
 def test_list_prints_status() -> None:
     runner = FakeRunner({"list-sessions": out("agentbox-t1\n"), "ls -1": out("t1\nt2\n")})
     result = _invoke(runner, ["list", "vm"])
@@ -70,3 +93,49 @@ def test_service_start_passes_policy() -> None:
     )
     assert result.exit_code == 0, result.output
     assert "--restart-policy unless-stopped" in runner.remote_commands()[-1]
+
+
+def _healthy_setup_runner() -> FakeRunner:
+    return FakeRunner(
+        {
+            "podman info": fail("no podman"),
+            "agentbox --version": out(f"agentbox, version {__version__}\n"),
+            "remote get-url origin": out("git@github.com:o/r.git\n"),
+            "test -f /srv/ab/r/repo/.agentbox.yaml": fail(""),
+            "test -f /srv/ab/r/repo/.agentbox.yml": fail(""),
+            "cat .config/agentbox/config.yaml": out(
+                yaml.safe_dump(
+                    {
+                        "runtime": "docker",
+                        "credentials": {"github": True},
+                        "state_scope": "repository",
+                    }
+                )
+            ),
+        }
+    )
+
+
+def test_setup_on_healthy_registered_host_exits_zero() -> None:
+    runner = _healthy_setup_runner()
+    with (
+        patch("agentbox.remote_cli.RemoteShell", lambda dest: RemoteShell(dest, runner)),
+        patch("agentbox.remote_cli.local_wheel", lambda: None),
+    ):
+        result = CliRunner().invoke(main, ["remote", "setup", "vm"])
+    assert result.exit_code == 0, result.output
+
+
+def test_setup_uses_explicit_ssh_destination_for_new_remote() -> None:
+    destinations: list[str] = []
+
+    def factory(dest: str) -> RemoteShell:
+        destinations.append(dest)
+        return RemoteShell(dest, FakeRunner({"true": fail("no route to host")}))
+
+    with (
+        patch("agentbox.remote_cli.RemoteShell", factory),
+        patch("agentbox.remote_cli.local_wheel", lambda: None),
+    ):
+        CliRunner().invoke(main, ["remote", "setup", "brand-new", "--ssh", "other-dest"])
+    assert destinations == ["other-dest"]

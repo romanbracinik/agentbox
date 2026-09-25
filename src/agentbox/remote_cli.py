@@ -70,7 +70,7 @@ def doctor(host: str) -> None:
     _report(run_doctor(remote_host, make_shell(remote_host), local_version=__version__))
 
 
-@remote.command(name="run", context_settings={"ignore_unknown_options": True})
+@remote.command(name="run")
 @click.argument("host")
 @click.option("--name", "task", required=True)
 @click.option("--branch", required=True)
