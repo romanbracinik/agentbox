@@ -61,5 +61,7 @@ def test_invalid_service_name_rejected_before_ssh() -> None:
 
 
 def test_invalid_restart_policy_rejected() -> None:
+    runner = FakeRunner()
     with pytest.raises(ConfigError):
-        start_service(RemoteShell("vm", FakeRunner()), HOST, "bot", "always", [])
+        start_service(RemoteShell("vm", runner), HOST, "bot", "always", [])
+    assert runner.calls == []

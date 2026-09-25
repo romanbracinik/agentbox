@@ -10,11 +10,12 @@ from dataclasses import dataclass
 from .exceptions import ConfigError, RemoteError
 from .remote_registry import RemoteHost
 from .remote_ssh import RemoteShell
-from .service import validate_name
 
 SESSION_PREFIX = "agentbox-"
 CONTAINER_PREFIX = "agentbox-task-"
 _BRANCH = re.compile(r"[A-Za-z0-9._/-]+")
+# tmux rewrites "." and ":" in session names, so task names exclude them.
+_TASK = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_-]*")
 
 
 @dataclass(frozen=True)
@@ -27,15 +28,18 @@ def session_name(task: str) -> str:
     return f"{SESSION_PREFIX}{task}"
 
 
+def _target(task: str, *, pane: bool = False) -> str:
+    # "=" disables tmux prefix matching; the trailing ":" makes a pane target exact too.
+    return f"={session_name(task)}{':' if pane else ''}"
+
+
 def container_name(task: str) -> str:
     return f"{CONTAINER_PREFIX}{task}"
 
 
 def _validate_task(task: str) -> None:
-    try:
-        validate_name(task)
-    except ConfigError:
-        raise ConfigError(f"Invalid task name: {task}") from None
+    if not _TASK.fullmatch(task):
+        raise ConfigError(f"Invalid task name: {task}")
 
 
 def _validate_branch(branch: str) -> None:
@@ -58,7 +62,7 @@ def start_task(
     _validate_task(task)
     _validate_branch(branch)
     worktree = _worktree(host, task)
-    if shell.run(["tmux", "has-session", "-t", session_name(task)]).returncode == 0:
+    if shell.run(["tmux", "has-session", "-t", _target(task)]).returncode == 0:
         raise RemoteError(f"Task {task} is already running")
     if shell.run(["test", "-e", worktree]).returncode == 0:
         raise RemoteError(
@@ -116,13 +120,13 @@ def list_tasks(shell: RemoteShell, host: RemoteHost) -> list[TaskStatus]:
 
 def attach_task(shell: RemoteShell, task: str) -> int:
     _validate_task(task)
-    return shell.interactive(["tmux", "attach", "-t", session_name(task)])
+    return shell.interactive(["tmux", "attach", "-t", _target(task)])
 
 
 def task_logs(shell: RemoteShell, task: str, tail: int) -> str:
     _validate_task(task)
     return shell.check(
-        ["tmux", "capture-pane", "-p", "-t", session_name(task), "-S", f"-{tail}"],
+        ["tmux", "capture-pane", "-p", "-t", _target(task, pane=True), "-S", f"-{tail}"],
         error=f"Cannot read output of task {task}",
     )
 
@@ -138,7 +142,7 @@ def stop_task(shell: RemoteShell, host: RemoteHost, task: str, *, remove_worktre
             raise RemoteError(
                 f"Worktree {worktree} has uncommitted changes; commit or push them first"
             )
-    shell.run(["tmux", "kill-session", "-t", session_name(task)])
+    shell.run(["tmux", "kill-session", "-t", _target(task)])
     # Killing tmux may leave the foreground container running.
     shell.run([host.runtime, "rm", "-f", container_name(task)])
     if remove_worktree:
