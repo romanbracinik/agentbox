@@ -35,7 +35,7 @@ def test_start_creates_worktree_and_session() -> None:
     cmds = runner.remote_commands()
     assert "git -C /srv/ab/r/repo fetch origin roman/DMD-1" in cmds
     assert "git -C /srv/ab/r/repo worktree add /srv/ab/r/wt/dmd-1 roman/DMD-1" in cmds
-    tmux = shlex.split(cmds[-2])
+    tmux = shlex.split(cmds[-1])
     assert tmux[:7] == [
         "tmux",
         "new-session",
@@ -45,7 +45,7 @@ def test_start_creates_worktree_and_session() -> None:
         "-c",
         "/srv/ab/r/wt/dmd-1",
     ]
-    assert shlex.split(tmux[-1]) == [
+    assert shlex.split(tmux[tmux.index(";") - 1]) == [
         "agentbox",
         "run",
         "/srv/ab/r/wt/dmd-1",
@@ -116,9 +116,17 @@ def test_start_ignores_session_with_same_prefix() -> None:
 def test_start_keeps_pane_after_agent_exits() -> None:
     runner = _branch_runner()
     start_task(_shell(runner), HOST, "t", "main", "claude", [])
-    cmds = runner.remote_commands()
-    assert cmds[-1] == "tmux set-option -t =agentbox-t: remain-on-exit on"
-    assert cmds[-2].startswith("tmux new-session -d -s agentbox-t ")
+    last = shlex.split(runner.remote_commands()[-1])
+    # One tmux invocation: a separate set-option call races an agent that exits at once.
+    assert last[:5] == ["tmux", "new-session", "-d", "-s", "agentbox-t"]
+    assert last[last.index(";") :] == [
+        ";",
+        "set-option",
+        "-t",
+        "=agentbox-t:",
+        "remain-on-exit",
+        "on",
+    ]
 
 
 def test_attach_uses_exact_target() -> None:

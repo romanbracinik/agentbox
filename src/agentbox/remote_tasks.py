@@ -108,14 +108,16 @@ def start_task(
             "bash",
             "-lc",
             inner,
+            # Same invocation, so the pane is kept even if the agent exits immediately.
+            ";",
+            "set-option",
+            "-t",
+            # remain-on-exit is a window option; a bare "=session" target is read as a window.
+            _target(task, pane=True),
+            "remain-on-exit",
+            "on",
         ],
         error=f"Cannot start task {task}",
-    )
-    # Keeps the pane (and its output) after the agent exits, so logs and list still see it.
-    shell.check(
-        # remain-on-exit is a window option; a bare "=session" target is read as a window name.
-        ["tmux", "set-option", "-t", _target(task, pane=True), "remain-on-exit", "on"],
-        error=f"Cannot configure task {task}",
     )
 
 
