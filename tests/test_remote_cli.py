@@ -35,11 +35,15 @@ def _invoke(runner: FakeRunner, args: list[str]):  # type: ignore[no-untyped-def
         return CliRunner().invoke(main, ["remote", *args])
 
 
+def _new_session(runner: FakeRunner) -> str:
+    return next(c for c in runner.remote_commands() if "tmux new-session" in c)
+
+
 def test_run_uses_host_default_agent() -> None:
     runner = FakeRunner({"tmux has-session": fail(""), "test -e": fail("")})
     result = _invoke(runner, ["run", "vm", "--name", "t1", "--branch", "main", "--", "do it"])
     assert result.exit_code == 0, result.output
-    assert "--agent claude" in runner.remote_commands()[-1]
+    assert "--agent claude" in _new_session(runner)
 
 
 def test_run_rejects_unknown_option_before_separator() -> None:
@@ -60,14 +64,16 @@ def test_run_passes_dashed_flag_after_separator_unchanged() -> None:
         ["run", "vm", "--name", "t1", "--branch", "main", "--", "--dangerous-flag", "x"],
     )
     assert result.exit_code == 0, result.output
-    assert "-- --dangerous-flag x" in runner.remote_commands()[-1]
+    assert "-- --dangerous-flag x" in _new_session(runner)
 
 
 def test_list_prints_status() -> None:
-    runner = FakeRunner({"list-sessions": out("agentbox-t1\n"), "ls -1": out("t1\nt2\n")})
+    runner = FakeRunner(
+        {"list-panes": out("agentbox-t1 0\nagentbox-t3 1\n"), "ls -1": out("t1\nt2\nt3\n")}
+    )
     result = _invoke(runner, ["list", "vm"])
     assert result.exit_code == 0
-    assert "t1\trunning" in result.output and "t2\tstopped" in result.output
+    assert result.output.splitlines() == ["t1\trunning", "t2\tstopped", "t3\texited"]
 
 
 def test_unknown_host_is_clear_error() -> None:

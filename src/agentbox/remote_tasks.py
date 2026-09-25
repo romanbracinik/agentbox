@@ -6,6 +6,7 @@ import re
 import shlex
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Literal
 
 from .exceptions import ConfigError, RemoteError
 from .remote_registry import RemoteHost
@@ -23,7 +24,7 @@ _USED_BY_WORKTREE = re.compile(r"(?:worktree|checked out) at '([^']+)'")
 @dataclass(frozen=True)
 class TaskStatus:
     name: str
-    running: bool
+    state: Literal["running", "exited", "stopped"]
 
 
 def session_name(task: str) -> str:
@@ -65,7 +66,7 @@ def start_task(
     _validate_branch(branch)
     worktree = _worktree(host, task)
     if shell.run(["tmux", "has-session", "-t", _target(task)]).returncode == 0:
-        raise RemoteError(f"Task {task} is already running")
+        raise RemoteError(f"Task {task} is already running or exited; stop it first")
     if shell.run(["test", "-e", worktree]).returncode == 0:
         raise RemoteError(
             f"Worktree {worktree} already exists; "
@@ -110,6 +111,11 @@ def start_task(
         ],
         error=f"Cannot start task {task}",
     )
+    # Keeps the pane (and its output) after the agent exits, so logs and list still see it.
+    shell.check(
+        ["tmux", "set-option", "-t", _target(task), "remain-on-exit", "on"],
+        error=f"Cannot configure task {task}",
+    )
 
 
 def _git_worktree_op(
@@ -153,15 +159,19 @@ def _sync_local_branch(shell: RemoteShell, host: RemoteHost, branch: str) -> Non
 
 
 def list_tasks(shell: RemoteShell, host: RemoteHost) -> list[TaskStatus]:
-    sessions = shell.run(["tmux", "list-sessions", "-F", "#{session_name}"])
-    running = {
-        line[len(SESSION_PREFIX) :]
-        for line in sessions.stdout.splitlines()
-        if sessions.returncode == 0 and line.startswith(SESSION_PREFIX)
-    }
+    panes = shell.run(["tmux", "list-panes", "-a", "-F", "#{session_name} #{pane_dead}"])
+    alive: dict[str, bool] = {}
+    for line in panes.stdout.splitlines() if panes.returncode == 0 else []:
+        session, _, dead = line.rpartition(" ")
+        if session.startswith(SESSION_PREFIX):
+            task = session[len(SESSION_PREFIX) :]
+            alive[task] = alive.get(task, False) or dead != "1"
     worktrees = shell.run(["ls", "-1", host.worktrees_dir])
     names = set(worktrees.stdout.split()) if worktrees.returncode == 0 else set()
-    return [TaskStatus(name, name in running) for name in sorted(names | running)]
+    return [
+        TaskStatus(name, "stopped" if name not in alive else "running" if alive[name] else "exited")
+        for name in sorted(names | alive.keys())
+    ]
 
 
 def attach_task(shell: RemoteShell, task: str) -> int:

@@ -90,10 +90,10 @@ def run_task(
 @remote.command(name="list")
 @click.argument("host")
 def list_command(host: str) -> None:
-    """List tasks and whether they are running."""
+    """List tasks and their state (running, exited, stopped)."""
     remote_host = get_host(host)
     for status in list_tasks(make_shell(remote_host), remote_host):
-        click.echo(f"{status.name}\t{'running' if status.running else 'stopped'}")
+        click.echo(f"{status.name}\t{status.state}")
 
 
 @remote.command()

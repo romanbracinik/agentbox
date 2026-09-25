@@ -35,7 +35,7 @@ def test_start_creates_worktree_and_session() -> None:
     cmds = runner.remote_commands()
     assert "git -C /srv/ab/r/repo fetch origin roman/DMD-1" in cmds
     assert "git -C /srv/ab/r/repo worktree add /srv/ab/r/wt/dmd-1 roman/DMD-1" in cmds
-    tmux = shlex.split(cmds[-1])
+    tmux = shlex.split(cmds[-2])
     assert tmux[:7] == [
         "tmux",
         "new-session",
@@ -111,6 +111,14 @@ def test_start_ignores_session_with_same_prefix() -> None:
     cmds = runner.remote_commands()
     assert cmds[0] == "tmux has-session -t =agentbox-fix"
     assert any(c.startswith("tmux new-session -d -s agentbox-fix ") for c in cmds)
+
+
+def test_start_keeps_pane_after_agent_exits() -> None:
+    runner = _branch_runner()
+    start_task(_shell(runner), HOST, "t", "main", "claude", [])
+    cmds = runner.remote_commands()
+    assert cmds[-1] == "tmux set-option -t =agentbox-t remain-on-exit on"
+    assert cmds[-2].startswith("tmux new-session -d -s agentbox-t ")
 
 
 def test_attach_uses_exact_target() -> None:
@@ -197,13 +205,23 @@ def test_start_surfaces_git_stderr_for_foreign_worktree() -> None:
 
 
 def test_list_combines_sessions_and_worktrees() -> None:
-    runner = FakeRunner({"list-sessions": out("agentbox-a\nother\n"), "ls -1": out("a\nb\n")})
-    assert list_tasks(_shell(runner), HOST) == [TaskStatus("a", True), TaskStatus("b", False)]
+    runner = FakeRunner(
+        {
+            "list-panes": out("agentbox-a 0\nagentbox-c 1\nother 0\n"),
+            "ls -1": out("a\nb\nc\n"),
+        }
+    )
+    assert list_tasks(_shell(runner), HOST) == [
+        TaskStatus("a", "running"),
+        TaskStatus("b", "stopped"),
+        TaskStatus("c", "exited"),
+    ]
+    assert "tmux list-panes -a -F '#{session_name} #{pane_dead}'" in runner.remote_commands()
 
 
 def test_list_without_tmux_server() -> None:
     runner = FakeRunner(
-        {"list-sessions": fail("no server running on /tmp/tmux-1000/default"), "ls -1": fail("")}
+        {"list-panes": fail("no server running on /tmp/tmux-1000/default"), "ls -1": fail("")}
     )
     assert list_tasks(_shell(runner), HOST) == []
 
